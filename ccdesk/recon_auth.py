@@ -22,8 +22,15 @@ def _age(then: object, now: datetime) -> float | None:
         return None
     try:
         return (now - datetime.fromisoformat(then)).total_seconds()
-    except ValueError:
+    except (ValueError, TypeError):
         return None
+
+
+def _int(val: object) -> int:
+    try:
+        return int(val)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
 
 
 def reconcile(records: dict[str, dict], sessions: list[Session], now_iso: str) -> list[Anomaly]:
@@ -37,17 +44,18 @@ def reconcile(records: dict[str, dict], sessions: list[Session], now_iso: str) -
 
     for req_id, rec in records.items():
         session_id = str(rec.get("session_id", ""))
-        digest = str(rec.get("input_digest", ""))[:80]
+        digest = str(rec.get("input_digest", ""))[:80].replace("\n", " ")
         decision = rec.get("decision")
 
-        if decision is None:
+        # 有 outcome 的请求按定义已闭合（如用户在 CC 原生弹窗拒绝），不悬空。
+        if decision is None and not rec.get("outcome"):
             age = _age(rec.get("ts_request"), now)
             if age is not None and age > config.DANGLING_REQUEST_S:
                 out.append(Anomaly("dangling_request", req_id, session_id,
                                    f"{rec.get('tool_name')} «{digest}» 无决策", age))
             continue
 
-        if int(rec.get("allow_count", 0)) > 1:
+        if _int(rec.get("allow_count", 0)) > 1:
             out.append(Anomaly("duplicate_allow", req_id, session_id,
                                f"同一请求被 allow {rec['allow_count']} 次", 0.0))
             continue
