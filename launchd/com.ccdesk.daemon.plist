@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.ccdesk.daemon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/Caskroom/miniconda/base/bin/python3</string>
+    <string>-m</string>
+    <string>ccdesk.daemon</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/chunhaixu/ccdesk</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONPATH</key><string>/Users/chunhaixu/ccdesk</string>
+    <key>LC_ALL</key><string>en_US.UTF-8</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/Users/chunhaixu/.ccdesk/logs/stdout.log</string>
+  <key>StandardErrorPath</key><string>/Users/chunhaixu/.ccdesk/logs/stderr.log</string>
+</dict>
+</plist>

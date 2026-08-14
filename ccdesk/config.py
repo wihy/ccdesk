@@ -28,3 +28,7 @@ GATE_DEADLINE_S = float(os.environ.get("CCDESK_GATE_DEADLINE", "7.5"))
 DANGLING_REQUEST_S = 60
 EMPTY_ALLOW_S = 600
 SILENT_STALL_S = 1800
+
+# 对账窗口（秒）：/recon/auth 只看该窗口内的请求。
+# 账本 append-only 无人清理，不过滤会让历史悬空请求被每次 reconcile 永久重报。
+RECON_WINDOW_S = float(os.environ.get("CCDESK_RECON_WINDOW", "86400"))
