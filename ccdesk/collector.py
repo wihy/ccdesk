@@ -28,7 +28,7 @@ class Collector:
         tmp.replace(self.state_path)
 
     def run_once(self) -> dict:
-        stats = {"requests": 0, "outcomes": 0, "skipped": 0}
+        stats = {"requests": 0, "outcomes": 0, "skipped": 0, "orphans": 0}
         try:
             stat = os.stat(self.events_path)
         except OSError:
@@ -62,13 +62,20 @@ class Collector:
                     stats["requests"] += 1
                     continue
                 outcome = events.to_outcome_record(event)
-                if outcome is not None and outcome["req_id"] in known:
-                    self.ledger.append({
-                        "req_id": outcome["req_id"],
-                        "outcome": outcome["outcome"],
-                        "ts_outcome": outcome["ts_outcome"],
-                    })
-                    stats["outcomes"] += 1
+                if outcome is not None:
+                    if outcome["req_id"] in known:
+                        self.ledger.append({
+                            "req_id": outcome["req_id"],
+                            "outcome": outcome["outcome"],
+                            "ts_outcome": outcome["ts_outcome"],
+                        })
+                        stats["outcomes"] += 1
+                    else:
+                        # 孤儿结局：req_id 不在已知集合（请求落在轮转备份里、
+                        # 或 hook 改写 input_fp 导致两侧对不上）。不归属就
+                        # 不瞎归属——不写账本，但必须数出来，不静默丢弃
+                        # 「工具确实执行过」的证据。
+                        stats["orphans"] += 1
 
         self._save_state(offset, stat.st_ino)
         return stats

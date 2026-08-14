@@ -36,10 +36,11 @@ def test_outcome_backfills_matching_request(tmp_path):
     ev_path = tmp_path / "events.jsonl"
     _write(ev_path, [REQ, POST])
     led = Ledger(tmp_path / "l.jsonl", tmp_path / "bad.jsonl")
-    Collector(ev_path, led, tmp_path / "state.json").run_once()
+    stats = Collector(ev_path, led, tmp_path / "state.json").run_once()
     rec = next(iter(led.read_merged().values()))
     assert rec["outcome"] == "executed"
     assert rec["ts_outcome"] == "2026-08-14T02:00:02+00:00"
+    assert stats["orphans"] == 0
 
 
 def test_second_run_reads_only_new_lines(tmp_path):
@@ -80,9 +81,25 @@ def test_garbage_lines_counted_as_skipped_not_fatal(tmp_path):
     led = Ledger(tmp_path / "l.jsonl", tmp_path / "bad.jsonl")
     stats = Collector(ev_path, led, tmp_path / "state.json").run_once()
     assert stats["skipped"] == 1
+    assert stats["orphans"] == 0
+
+
+def test_orphan_outcome_counted_not_dropped(tmp_path):
+    """无对应请求的结局事件：不写账本（不瞎归属），但必须计入 orphans。
+
+    复现路径：daemon 首启从头读、或宕机超过一个轮转周期后重启，
+    对应请求落在轮转备份里而 collector 从不读备份——结局匹配不上
+    任何已知 req_id。此前这类事件被静默丢弃，违反「永不静默丢弃」。
+    """
+    ev_path = tmp_path / "events.jsonl"
+    _write(ev_path, [POST])
+    led = Ledger(tmp_path / "l.jsonl", tmp_path / "bad.jsonl")
+    stats = Collector(ev_path, led, tmp_path / "state.json").run_once()
+    assert stats == {"requests": 0, "outcomes": 0, "skipped": 0, "orphans": 1}
+    assert led.read_merged() == {}
 
 
 def test_missing_events_file_is_not_fatal(tmp_path):
     led = Ledger(tmp_path / "l.jsonl", tmp_path / "bad.jsonl")
     stats = Collector(tmp_path / "nope.jsonl", led, tmp_path / "state.json").run_once()
-    assert stats == {"requests": 0, "outcomes": 0, "skipped": 0}
+    assert stats == {"requests": 0, "outcomes": 0, "skipped": 0, "orphans": 0}
