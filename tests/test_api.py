@@ -1,12 +1,13 @@
 import json
 import threading
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from ccdesk.api import AppState, make_server
+from ccdesk.api import AppState, CollectHealth, make_server
 from ccdesk.collector import Collector
 from ccdesk.ledger import Ledger
 
@@ -43,6 +44,27 @@ def get(base, path):
 
 def test_health_ok(server):
     assert get(server, "/health")["ok"] is True
+
+
+def test_health_exposes_collect_heartbeat(tmp_path):
+    """F-B3：/health 透出采集心跳，区分「无事件」与「采集线程已死」。
+
+    last_collect_ts 由 daemon._collect_forever 在每轮 run_once 正常结束后写入；
+    这里模拟一次已完成的心跳，断言 /health 原样透出两键且 ok 仍在。
+    """
+    led = Ledger(tmp_path / "l.jsonl", tmp_path / "bad.jsonl")
+    col = Collector(tmp_path / "events.jsonl", led, tmp_path / "state.json")
+    health = CollectHealth(last_collect_ts=time.time())
+    srv = make_server("127.0.0.1", 0, AppState(led, col, health))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+    try:
+        body = get(base, "/health")
+    finally:
+        srv.shutdown()
+    assert body["ok"] is True
+    assert isinstance(body["last_collect_ts"], float) and body["last_collect_ts"] > 0
+    assert isinstance(body["collect_errors"], int) and body["collect_errors"] == 0
 
 
 def test_sessions_exposes_waiting_reason(server):

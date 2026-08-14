@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -16,9 +16,21 @@ OBSERVE_ONLY_REASON = "ccdesk: observe-only (P1)"
 
 
 @dataclass
+class CollectHealth:
+    """采集线程心跳（F-B3）：daemon 的采集循环负责更新，/health 负责透出。
+
+    用于区分「无事件」与「线程已死」——last_collect_ts 停止前进即线程死亡。
+    """
+
+    last_collect_ts: float = 0.0
+    collect_errors: int = 0
+
+
+@dataclass
 class AppState:
     ledger: Ledger
     collector: Collector
+    health: CollectHealth = field(default_factory=CollectHealth)
 
 
 def _now_iso() -> str:
@@ -61,7 +73,9 @@ def make_server(host: str, port: int, state: AppState) -> ThreadingHTTPServer:
         def do_GET(self) -> None:
             path = self.path.split("?", 1)[0]
             if path == "/health":
-                self._send({"ok": True, "ts": _now_iso()})
+                self._send({"ok": True, "ts": _now_iso(),
+                            "last_collect_ts": state.health.last_collect_ts,
+                            "collect_errors": state.health.collect_errors})
             elif path == "/sessions":
                 sessions = list_sessions()
                 self._send({
