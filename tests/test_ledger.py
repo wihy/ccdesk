@@ -1,4 +1,14 @@
-from ccdesk.ledger import Ledger, canonical_input, input_fingerprint, make_req_id
+from ccdesk.ledger import (
+    VOLATILE_INPUT_KEYS, Ledger, canonical_input, input_fingerprint, make_req_id,
+)
+
+# 结局侧才长出来的键（CC 把用户作答并进了 tool_input）。请求侧只有 questions。
+ASK_REQUEST_INPUT = {"questions": [{"header": "范围", "options": ["A", "B"]}]}
+ASK_OUTCOME_INPUT = {
+    "questions": [{"header": "范围", "options": ["A", "B"]}],
+    "answers": [{"header": "范围", "answer": "A"}],
+    "annotations": {"source": "user"},
+}
 
 
 def test_canonical_input_is_key_order_independent():
@@ -6,6 +16,39 @@ def test_canonical_input_is_key_order_independent():
     b = {"description": "d", "command": "ls"}
     assert canonical_input(a) == canonical_input(b)
     assert input_fingerprint(a) == input_fingerprint(b)
+
+
+# ---------------------------------------------------------------------------
+# C-2 fix: 按工具剔除「结局侧才出现」的易变键，让请求侧与结局侧指纹重新对齐
+# ---------------------------------------------------------------------------
+
+def test_ask_user_question_fingerprint_ignores_answers_and_annotations():
+    """AskUserQuestion 下，结局侧多出的 answers / annotations 不得改变指纹。"""
+    assert (input_fingerprint(ASK_REQUEST_INPUT, "AskUserQuestion")
+            == input_fingerprint(ASK_OUTCOME_INPUT, "AskUserQuestion"))
+
+
+def test_volatile_key_stripping_is_per_tool_not_blanket():
+    """同样两份输入换成 Bash（不在剔除表里）必须算出不同指纹。
+
+    锁死「不是无差别丢键」——无差别丢 answers/annotations 会让真正带这些字段的
+    别的工具产生指纹碰撞，进而错配 outcome。
+    """
+    assert "Bash" not in VOLATILE_INPUT_KEYS
+    assert (input_fingerprint(ASK_REQUEST_INPUT, "Bash")
+            != input_fingerprint(ASK_OUTCOME_INPUT, "Bash"))
+
+
+def test_fingerprint_without_tool_name_keeps_old_behaviour():
+    """不传 tool_name 时不剔除任何键——canonical_input 的原语义不变。"""
+    assert (input_fingerprint(ASK_REQUEST_INPUT)
+            != input_fingerprint(ASK_OUTCOME_INPUT))
+    assert input_fingerprint(ASK_REQUEST_INPUT) == input_fingerprint(ASK_REQUEST_INPUT, "Bash")
+
+
+def test_canonical_input_itself_is_untouched_by_volatile_keys():
+    """canonical_input 不参与剔除（_digest 的 fallback 还用着它）。"""
+    assert "answers" in canonical_input(ASK_OUTCOME_INPUT)
 
 
 def test_req_id_is_stable_and_short():

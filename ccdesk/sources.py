@@ -2,12 +2,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 from dataclasses import dataclass
 from typing import Any
 
 from ccdesk import config
+
+# 上一次 list_sessions() 实际用的真源："cli"（主源）/ "file"（降级）。
+# 首次调用前为 "unknown" —— 不假装已经跑过。/health 透出它，让降级态可被外部观测。
+LAST_SOURCE = "unknown"
 
 
 @dataclass(frozen=True)
@@ -93,17 +98,33 @@ def _read_files() -> list[Session]:
     return out
 
 
+def _fallback_to_files(reason: str) -> list[Session]:
+    """降级读文件真源，并把「降级了」这件事记下来。
+
+    只在状态**变成** file 时记一条 warning：菜单栏 App 每 3s 打一次 /sessions，
+    每次都记会把无轮转的 daemon.log 刷爆。持续态由 /health 的 session_source 透出。
+    """
+    global LAST_SOURCE
+    if LAST_SOURCE != "file":
+        logging.warning("会话主源 %s 不可用，降级到文件真源：%s", config.CLAUDE_BIN, reason)
+    LAST_SOURCE = "file"
+    return _read_files()
+
+
 def list_sessions(timeout: float = 10.0) -> list[Session]:
+    global LAST_SOURCE
     try:
         raw = _run_cli(timeout)
-    except (subprocess.TimeoutExpired, OSError):
-        raw = ""
-    if raw.strip():
-        try:
-            data = json.loads(raw)
-        except ValueError:
-            data = None
-        if isinstance(data, list):
-            sessions = [_from_cli_dict(d) for d in data if isinstance(d, dict)]
-            return [s for s in sessions if s is not None]
-    return _read_files()
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return _fallback_to_files(f"{type(exc).__name__}: {exc}")
+    if not raw.strip():
+        return _fallback_to_files("CLI 无输出（退出码非 0 或空 stdout）")
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return _fallback_to_files("CLI 输出不是合法 JSON")
+    if not isinstance(data, list):
+        return _fallback_to_files("CLI 输出的 JSON 不是数组")
+    sessions = [_from_cli_dict(d) for d in data if isinstance(d, dict)]
+    LAST_SOURCE = "cli"
+    return [s for s in sessions if s is not None]

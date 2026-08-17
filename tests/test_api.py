@@ -65,6 +65,18 @@ def test_health_exposes_collect_heartbeat(tmp_path):
     assert body["ok"] is True
     assert isinstance(body["last_collect_ts"], float) and body["last_collect_ts"] > 0
     assert isinstance(body["collect_errors"], int) and body["collect_errors"] == 0
+    # I1：健康判据必须能直接读，不能让调用方拿 ISO 串减 epoch 浮点。
+    assert isinstance(body["collect_age_s"], float) and 0 <= body["collect_age_s"] < 60
+
+
+def test_health_exposes_session_source(server, monkeypatch):
+    """C1：会话主源降级不再静默——/health 透出 sources.LAST_SOURCE。"""
+    from ccdesk import sources
+
+    monkeypatch.setattr(sources, "LAST_SOURCE", "file")
+    assert get(server, "/health")["session_source"] == "file"
+    monkeypatch.setattr(sources, "LAST_SOURCE", "cli")
+    assert get(server, "/health")["session_source"] == "cli"
 
 
 def test_sessions_exposes_waiting_reason(server):

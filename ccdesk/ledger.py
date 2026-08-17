@@ -7,11 +7,25 @@ import json
 from pathlib import Path
 
 
+# 「结局侧才会长出来」的 tool_input 键，按工具名剔除。
+#
+# 实测坐实（2026-08-17，2020 对 PreToolUse↔PostToolUse 受控对照）：Claude Code 自己
+# 在 PostToolUse 之前把用户的 answers / annotations 并进了 tool_input——请求侧键集是
+# ('questions',)，结局侧变成 ('annotations','answers','questions')，同一次交互两侧
+# 指纹不同，outcome 永远回填不上（线上 2024 条 outcome 命中 0 条）。
+# 剩下 2017 对（Bash/Read/Edit/Write…）input_fp 完全一致，所以指纹作 join key 的
+# 设计本身没问题，只需按工具精确剔除这几个键——不做无差别丢键，否则会错配。
+VOLATILE_INPUT_KEYS = {"AskUserQuestion": frozenset({"answers", "annotations"})}
+
+
 def canonical_input(tool_input: dict) -> str:
     return json.dumps(tool_input, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
-def input_fingerprint(tool_input: dict) -> str:
+def input_fingerprint(tool_input: dict, tool_name: str = "") -> str:
+    volatile = VOLATILE_INPUT_KEYS.get(tool_name)
+    if volatile:
+        tool_input = {k: v for k, v in tool_input.items() if k not in volatile}
     raw = canonical_input(tool_input).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:12]
 

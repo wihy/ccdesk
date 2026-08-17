@@ -68,6 +68,8 @@ class Collector:
                             "req_id": outcome["req_id"],
                             "outcome": outcome["outcome"],
                             "ts_outcome": outcome["ts_outcome"],
+                            # None 会被 read_merged 忽略，PostToolUse 不会写空原因。
+                            "outcome_reason": outcome.get("outcome_reason"),
                         })
                         stats["outcomes"] += 1
                     else:

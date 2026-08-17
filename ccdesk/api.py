@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from ccdesk import config
+from ccdesk import config, sources
 from ccdesk.collector import Collector
 from ccdesk.ledger import Ledger
 from ccdesk.recon_auth import reconcile
@@ -73,9 +74,15 @@ def make_server(host: str, port: int, state: AppState) -> ThreadingHTTPServer:
         def do_GET(self) -> None:
             path = self.path.split("?", 1)[0]
             if path == "/health":
+                # collect_age_s 由服务端算：ts 是 ISO 串、last_collect_ts 是 epoch
+                # 浮点，量纲不同没法相减，客户端拿到两者也判不出健康度（I1）。
                 self._send({"ok": True, "ts": _now_iso(),
                             "last_collect_ts": state.health.last_collect_ts,
-                            "collect_errors": state.health.collect_errors})
+                            "collect_age_s": time.time() - state.health.last_collect_ts,
+                            "collect_errors": state.health.collect_errors,
+                            # 会话真源现状："cli" 主源 /"file" 降级 /"unknown" 尚未取过。
+                            # 降级不再静默（C1）。
+                            "session_source": sources.LAST_SOURCE})
             elif path == "/sessions":
                 sessions = list_sessions()
                 self._send({
