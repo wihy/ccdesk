@@ -22,7 +22,7 @@ launchd 常驻 Python daemon 做三态决策与四类对账，再用 Swift 菜�
 | 会话枚举 + 等待检测已官方提供 | `claude agents --json` 返回 `pid/cwd/kind/sessionId/name/status`，等待时带 `status:"waiting"` + **`waitingFor:"dialog open"`**。实测 9 个会话，含一个真实 waiting | **不自建会话发现层**。该 CLI 为主源 |
 | 程序化授权通道存在且唯一 | CLI 二进制内含 `hookSpecificOutput.permissionDecision` ∈ `allow`/`deny`/`ask`，文档串明确标注 **PreToolUse only** | 自动授权只能在 `PreToolUse` hook 里做 |
 | 决策不能异步外包 | `permissionDecision=defer` 存在，但串明确写 **"defer is print-mode only"**，交互模式忽略 | 交互式会话必须**同步**出决定 |
-| hook 超时代价是硬伤 | 串：`PreToolUse hook did not respond before its timeout … The tool call was not executed` | 闸门必须**自己**在超时前降级返回 `ask`，绝不让 CC 判超时 |
+| hook 超时代价是硬伤 | U2 spike 实测（`spikes/u2-hook-timeout.md`）：hook 超时后 CC **fall through 到自身默认权限管线**，不是必然拒绝——结果因命令形态而异（本次实测：无副作用只读命令被默认放行执行；有副作用写操作在 headless 模式下被拒绝，日志见 `Bash tool permission denied`）。二进制里的字面串 `PreToolUse hook did not respond before its timeout…The tool call was not executed` 对应的是更具体的 host-client-unreachable 分支，本次未原样复现 | 正因为 CC 侧超时后的兜底行为**不保证拒绝**、因命令形态而异，闸门**唯一可靠的安全屏障**是自己在超时前用内部 watchdog 降级返回 `ask`，绝不能指望 CC 的外部 timeout 替它兜底 |
 | 入站 peer 消息有审批闸门 | 二进制含 `peer_inbound_gate` / `peer_inbound_approval` / `peer_blocked` | 「外部推进」**不是无条件可用**，列为 P0 spike |
 | 全量事件已在采集 | `~/.claude/settings.json` 全 hook → `~/.claude/hooks/observe.py` → `~/.adw/observability/claude/events.jsonl`（61MB + 5 轮转档），含 `PermissionRequest`（带 `tool_name`/`tool_input`/`session_id`/`prompt_id`） | 追踪与对账的原始素材已存在，**不重复采集** |
 | peer 通信通道存在 | `/tmp/cc-socks/<pid>.sock`；`ListAgents` 实测列出 7 个会话 | 回复推进的候选通道 |
@@ -31,10 +31,11 @@ launchd 常驻 Python daemon 做三态决策与四类对账，再用 Swift 菜�
 
 | 编号 | 未验证内容 | 处置 |
 |---|---|---|
-| U1 | 向 `status=waiting`（弹窗态）的会话发 peer 消息，会话是否会消费并推进 | P0 spike，用一次性沙盒会话验证，**不得拿用户在跑的会话做实验** |
-| U2 | hook `timeout` 字段的上限与默认值 | P0 spike，实测 8s / 30s / 60s 是否被接受 |
+| U1 | ~~向 `status=waiting`（弹窗态）的会话发 peer 消息，会话是否会消费并推进~~ | **`waitingFor=input needed` 已验证**（`spikes/u1-peer-advance.md`）：结论 **仅排队不推进** —— 消息能送达并落进输入框，但弹窗仍在、`status` 仍为 `waiting`、无助手输出；弹窗被人处理后该消息才被消费。**`waitingFor=dialog open`（真实权限弹窗）未直接复现**——用户 `Bash(*)` 白名单使 Bash 不弹窗，无法在零副作用前提下触发；方向上推断同样无法解除（两者共享同一 `status=waiting` 阻塞机制），但这是架构类比、非实测，**标注为待验证**，不并入「已验证」 |
+| U2 | ~~hook `timeout` 字段的上限与默认值~~ | **已验证**（`spikes/u2-hook-timeout.md`）：实测 30/60/120/300s 全部生效，未见上限（结论 ≥300s）；超时代价=工具调用不执行，但是 fall through 到 CC 默认权限管线而非必然 deny。`config.GATE_DEADLINE_S=7.5` 可用，CC 侧 hook `timeout` 建议设 10s |
 | U3 | FleetView 的 `peek-reply` 是否有可脚本化入口 | P1 探查；若有则优先复用，替代自研推进通道 |
-| U4 | `waitingFor` 的完整取值域（目前只观测到 `dialog open`） | P1 边跑边收集，写进枚举表 |
+| U4 | `waitingFor` 的完整取值域（已观测到两个：`dialog open` 见于权限弹窗；`input needed` 见于 AskUserQuestion，实测于 U1 spike） | 仍未穷尽，P1 边跑边收集，写进枚举表 |
+| U5 | `PreToolUse` 闸门能否用 `updatedInput` 预填 AskUserQuestion 的 `answers` 从而**自动作答** | **P2 首个任务验证**。线索见 `spikes/u1-peer-advance.md` 末节（AskUserQuestion 确实经过闸门；hook 支持 `updatedInput`；`answers` 字段描述为「由 permission component 收集」）。若不成立，第五节 `ask_question` 风险类降级为「只通知、不自动」 |
 
 ---
 
@@ -172,11 +173,21 @@ PreToolUse 请求
 | 等待类型 | 识别 | 通道 | 状态 |
 |---|---|---|---|
 | 等授权（工具调用） | gate 收到 PreToolUse | `permissionDecision` 返回值 | ✅ 已坐实 |
-| 等回复（会话停在那要你说话） | `claude agents --json` 报 `status=waiting`/`idle` 持续 >2 分钟（可配 `reply_wait_seconds`） | peer socket（`SendMessage`）| ⚠️ 依赖 U1 |
+| 等回复（会话 `idle`，无弹窗，停在那等你说话） | `claude agents --json` 报 `status=idle` 持续 >2 分钟（可配 `reply_wait_seconds`） | peer socket（`SendMessage`）| ✅ 可用 |
+| **等弹窗（`waitingFor=input needed`，AskUserQuestion）** | `status=waiting` + `waitingFor=input needed` | **外部通道无效**（U1 已坐实：仅排队不推进） | ❌ 只能通知人 |
+| **等弹窗（`waitingFor=dialog open`，真实权限弹窗）** | `status=waiting` + `waitingFor=dialog open` | **外部通道预期同样无效，但未直接复现**（U1 推断，架构理由：与 `input needed` 共享同一 `status=waiting` 阻塞机制；待验证） | ❌ 只能通知人（同上，按推断处置，P1 应补验证） |
 | 托管会话 | 由 ccdesk 拉起 | `csd`（tmux）send / converse | ✅ 工具已存在 |
 
-**U1 未验证前，回复推进只对托管会话开放**；对手开会话仅做「通知 + 定位到那个终端窗口」。
-若 U1 验证失败，P3 的回复推进降级为「只服务托管会话」，不影响 P1/P2 交付价值。
+**U1 结论改写了这一节**：外部 peer 消息对 `waitingFor=input needed` **已验证**无法解除；对
+`waitingFor=dialog open` **未直接复现**，仅按架构类比推断同样无法解除（两者共享 `status=waiting` +
+同一套本地阻塞读取机制，但没有直接实验或源码验证支撑，标注为**待验证**，不与 `input needed` 混为
+「已坐实」）。消息会静静排队，直到人处理完弹窗才被消费——这一行为在 `input needed` 分支已实测确认。
+因此：
+
+- **`idle` 会话**：peer 推进可用，P3 对手开会话同样开放（原计划的「只服务托管会话」限制解除）。
+- **`waiting` 会话**：程序化推进的唯一入口是 `PreToolUse` 闸门（授权类）。AskUserQuestion 类的 waiting
+  能否被闸门代答，取决于 **U5**（未验证）；U5 不成立则该类只能「通知 + 定位到那个终端窗口」。
+  `dialog open` 类的推进能力验证优先级应提到 P1（补 U1 的复现缺口）。
 
 ---
 

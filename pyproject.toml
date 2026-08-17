@@ -1,0 +1,9 @@
+[project]
+name = "ccdesk"
+version = "0.1.0"
+description = "Claude Code 会话值班台"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.ccdesk.daemon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/Caskroom/miniconda/base/bin/python3</string>
+    <string>-m</string>
+    <string>ccdesk.daemon</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/chunhaixu/ccdesk</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONPATH</key><string>/Users/chunhaixu/ccdesk</string>
+    <key>LC_ALL</key><string>en_US.UTF-8</string>
+    <!-- launchd 不继承登录 shell 的 PATH：默认只有 /usr/bin:/bin:/usr/sbin:/sbin，
+         里面没有 claude，sources._run_cli 会直接 OSError 降级到文件真源。
+         ~/.local/bin/claude 是稳定入口（指向 versions/ 下的当前版本）。 -->
+    <key>PATH</key><string>/Users/chunhaixu/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/Users/chunhaixu/.ccdesk/logs/stdout.log</string>
+  <key>StandardErrorPath</key><string>/Users/chunhaixu/.ccdesk/logs/stderr.log</string>
+</dict>
+</plist>
