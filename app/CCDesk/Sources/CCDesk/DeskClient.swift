@@ -13,6 +13,10 @@ struct DeskClient {
         try await get(ReconPayload.self, path: "/recon/auth")
     }
 
+    func health() async throws -> HealthPayload {
+        try await get(HealthPayload.self, path: "/health")
+    }
+
     private func get<T: Decodable>(_ type: T.Type, path: String) async throws -> T {
         var request = URLRequest(url: base.appendingPathComponent(path))
         request.timeoutInterval = 5

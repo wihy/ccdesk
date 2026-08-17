@@ -1,16 +1,33 @@
 import AppKit
+import SwiftUI
 import UserNotifications
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private let client = DeskClient()
+    private let model = PanelModel()
+    private var popover: NSPopover!
     private var timer: Timer?
     private var knownWaiting: Set<Int> = []
+    // I10：Timer 每 3s 派一个游离 Task，daemon 慢时（/sessions 会 fork claude 子进程，
+    // 实测 240~760ms）会并发多个 refresh，knownWaiting 的读—改—写错序 → 重复/伪新通知。
+    // popover 打开时还会额外拉一次，并发概率更高。正在跑就跳过这轮。
+    private var isRefreshing = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = "CC …"
-        statusItem.menu = NSMenu()
+        statusItem.button?.target = self
+        statusItem.button?.action = #selector(togglePanel(_:))
+
+        popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentSize = NSSize(width: 420, height: 520)
+        popover.contentViewController = NSHostingController(
+            rootView: PanelView(model: model,
+                                onOpenCwd: { [weak self] in self?.openCwd($0) },
+                                onQuit: { NSApp.terminate(nil) }))
+
         // 裸 SPM 可执行文件没有 app bundle，UNUserNotificationCenter.current() 会抛
         // bundleProxyForCurrentProcess is nil；只有包进 .app 后通知才可用。
         if Bundle.main.bundleIdentifier != nil {
@@ -23,44 +40,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { await refresh() }
     }
 
-    private func refresh() async {
-        do {
-            let payload = try await client.sessions()
-            let fresh = newlyWaiting(current: payload.sessions, previous: knownWaiting)
-            knownWaiting = Set(payload.sessions.filter { $0.status == "waiting" }.map(\.pid))
-            await MainActor.run {
-                render(payload)
-                fresh.forEach(notify)
-            }
-        } catch {
-            await MainActor.run { statusItem.button?.title = "CC ⚠︎" }
+    @objc private func togglePanel(_ sender: Any?) {
+        guard let button = statusItem.button else { return }
+        if popover.isShown {
+            popover.performClose(sender)
+            return
         }
+        NSApp.activate(ignoringOtherApps: true)
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        // 打开即拉一次，否则最坏会看到 3s 前的旧数据。
+        Task { await refresh() }
     }
 
     @MainActor
-    private func render(_ payload: SessionsPayload) {
-        statusItem.button?.title = payload.waitingCount > 0
-            ? "CC ●\(payload.waitingCount)" : "CC \(payload.sessions.count)"
-        let menu = NSMenu()
-        for session in payload.sessions.sorted(by: { $0.status < $1.status }) {
-            let mark = session.status == "waiting" ? "● " : "  "
-            let reason = session.waitingFor.map { " — \($0)" } ?? ""
-            let item = NSMenuItem(
-                title: "\(mark)\(session.name)  [\(session.status)]\(reason)",
-                action: #selector(openCwd(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = session.cwd
-            menu.addItem(item)
+    private func refresh() async {
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
+
+        // 三个接口并发；各自独立降级——/sessions 挂了不该把健康条也一起清空。
+        async let sessionsTask = client.sessions()
+        async let reconTask = client.recon()
+        async let healthTask = client.health()
+
+        do {
+            let payload = try await sessionsTask
+            let fresh = newlyWaiting(current: payload.sessions, previous: knownWaiting)
+            knownWaiting = Set(payload.sessions.filter { $0.status == "waiting" }.map(\.pid))
+            model.sessions = payload.sessions
+            model.waitingCount = payload.waitingCount
+            model.unreachable = false
+            statusItem.button?.title = payload.waitingCount > 0
+                ? "CC ●\(payload.waitingCount)" : "CC \(payload.sessions.count)"
+            fresh.forEach(notify)
+        } catch {
+            model.unreachable = true
+            statusItem.button?.title = "CC ⚠︎"
         }
-        menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "退出", action: #selector(NSApplication.terminate(_:)),
-                                keyEquivalent: "q"))
-        statusItem.menu = menu
+        // 异常清单取不到时保留上一次，避免瞬时失败让异常"凭空消失"；
+        // 健康条相反——取不到就必须显式转红，不能拿旧值假装还活着。
+        if let recon = try? await reconTask { model.anomalies = recon.anomalies }
+        model.health = try? await healthTask
     }
 
-    @objc private func openCwd(_ sender: NSMenuItem) {
-        guard let path = sender.representedObject as? String else { return }
-        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+    private func openCwd(_ session: Session) {
+        NSWorkspace.shared.open(URL(fileURLWithPath: session.cwd))
     }
 
     private func notify(_ session: Session) {
