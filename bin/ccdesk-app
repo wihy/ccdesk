@@ -1,0 +1,72 @@
+#!/bin/sh
+# ccdesk 菜单栏 App 的起停管理。
+#   ccdesk-app start|stop|restart|status
+# daemon 由 launchd 常驻，不归本脚本管（用 launchctl）。
+set -eu
+
+APP_DIR="/Users/chunhaixu/ccdesk/app/CCDesk"
+BIN="$APP_DIR/.build/release/CCDesk"
+PIDFILE="/tmp/ccdesk-app.pid"
+LOGFILE="/tmp/ccdesk-app.log"
+
+running_pid() {
+    [ -f "$PIDFILE" ] || return 1
+    pid=$(cat "$PIDFILE" 2>/dev/null) || return 1
+    [ -n "$pid" ] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    echo "$pid"
+}
+
+cmd_start() {
+    if pid=$(running_pid); then
+        echo "已在运行 (pid $pid)"
+        return 0
+    fi
+    if [ ! -x "$BIN" ]; then
+        echo "未构建，正在构建…"
+        (cd "$APP_DIR" && swift build -c release)
+    fi
+    nohup "$BIN" > "$LOGFILE" 2>&1 &
+    echo $! > "$PIDFILE"
+    sleep 3
+    if pid=$(running_pid); then
+        echo "✅ 已启动 (pid $pid) — 看屏幕右上角菜单栏的 CC 徽标"
+    else
+        echo "❌ 启动后退出，日志："
+        cat "$LOGFILE"
+        return 1
+    fi
+}
+
+cmd_stop() {
+    if pid=$(running_pid); then
+        kill "$pid"
+        rm -f "$PIDFILE"
+        echo "已停止 (pid $pid)"
+    else
+        echo "未在运行"
+    fi
+}
+
+cmd_status() {
+    if pid=$(running_pid); then
+        echo "App:    运行中 (pid $pid)"
+    else
+        echo "App:    未运行"
+    fi
+    if launchctl list 2>/dev/null | grep -q com.ccdesk.daemon; then
+        echo "daemon: 常驻中 ($(launchctl list | awk '/com.ccdesk.daemon/{print "pid "$1}'))"
+    else
+        echo "daemon: 未装载"
+    fi
+    curl -s --max-time 3 http://127.0.0.1:8787/health 2>/dev/null \
+        | sed 's/^/health: /' || echo "health: 无响应"
+}
+
+case "${1:-status}" in
+    start)   cmd_start ;;
+    stop)    cmd_stop ;;
+    restart) cmd_stop; cmd_start ;;
+    status)  cmd_status ;;
+    *) echo "用法: ccdesk-app start|stop|restart|status" >&2; exit 2 ;;
+esac
