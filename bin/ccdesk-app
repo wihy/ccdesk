@@ -1,11 +1,12 @@
 #!/bin/sh
 # ccdesk 菜单栏 App 的起停管理。
-#   ccdesk-app start|stop|restart|status
+#   ccdesk-app start|stop|restart|status|install
 # daemon 由 launchd 常驻，不归本脚本管（用 launchctl）。
 set -eu
 
 APP_DIR="/Users/chunhaixu/ccdesk/app/CCDesk"
 BIN="$APP_DIR/.build/release/CCDesk"
+BUNDLE="$HOME/Applications/CCDesk.app"
 PIDFILE="/tmp/ccdesk-app.pid"
 LOGFILE="/tmp/ccdesk-app.log"
 
@@ -48,9 +49,25 @@ cmd_stop() {
     fi
 }
 
+cmd_install() {
+    # 裸可执行和 .app 会抢同一个 status item，装之前先把裸实例停掉。
+    cmd_stop
+    sh "$APP_DIR/build-app.sh" "$BUNDLE"
+    cat <<TIP
+已装到 $BUNDLE
+  · 打开：启动台/Spotlight 搜 CCDesk。只做了 ad-hoc 签名、**没有开发者签名/公证**，
+    若 macOS 拦下，在 Finder 里对它右键 →「打开」放行一次即可（之后正常双击）。
+  · 开机自启：系统设置 → 通用 → 登录项与扩展 → 「登录时打开」里 + 号加它。
+  · 面板入口：菜单栏 CC 徽标，或按 ⌥⌘D（徽标被 macOS 隐藏时也能用）。
+TIP
+}
+
 cmd_status() {
     if pid=$(running_pid); then
-        echo "App:    运行中 (pid $pid)"
+        # ${pid} 的花括号不能省：变量后紧跟中文时 sh 会把多字节字符并进变量名。
+        echo "App:    运行中 (pid ${pid}，裸可执行)"
+    elif pid=$(pgrep -f "CCDesk.app/Contents/MacOS/CCDesk" | head -1) && [ -n "$pid" ]; then
+        echo "App:    运行中 (pid ${pid}，.app)"
     else
         echo "App:    未运行"
     fi
@@ -68,5 +85,6 @@ case "${1:-status}" in
     stop)    cmd_stop ;;
     restart) cmd_stop; cmd_start ;;
     status)  cmd_status ;;
-    *) echo "用法: ccdesk-app start|stop|restart|status" >&2; exit 2 ;;
+    install) cmd_install ;;
+    *) echo "用法: ccdesk-app start|stop|restart|status|install" >&2; exit 2 ;;
 esac

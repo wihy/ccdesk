@@ -95,10 +95,33 @@ dangling_request   935c8425155cd84a  AskUserQuestion «{"questions":[...]» 无�
 ### 菜单栏 App
 
 ```bash
-cd app/CCDesk && swift build -c release && (.build/release/CCDesk &)
+~/ccdesk/bin/ccdesk-app install     # swift build -c release → 打包装到 ~/Applications/CCDesk.app
 ```
 
-菜单栏徽标显示等待计数，点开下拉看各会话详情；App 每 3s 拉一次 `/sessions`，该接口取不到时徽标变 `⚠︎`。
+装完从启动台 / Spotlight 搜 `CCDesk` 打开。菜单栏徽标显示等待计数，点开看三区面板；
+App 每 3s 拉一次 `/sessions`，该接口取不到时徽标变 `⚠︎`。
+开机自启：系统设置 → 通用 → 登录项与扩展 →「登录时打开」里加 `~/Applications/CCDesk.app`。
+开发跑法仍在（`ccdesk-app start` 直接起裸可执行），但**没有 bundle 就没有通知**（见已知限制 2）。
+
+**⌥⌘D 唤出面板** —— 不依赖徽标是否可见的入口。菜单栏空间不足时 macOS 会**静默隐藏**排在后面的
+第三方 status item：本机是刘海屏 + 十几个常驻应用（Lark / Figma / cmux / aTrust…），CC 徽标就这么
+没了，且这是环境问题、改代码救不回来。所以热键路径不锚那个已被隐藏的 button，而是在**鼠标所在
+那块屏**的右上角（菜单栏下方）放一个 1×1 透明窗口当锚点。写死 ⌥⌘D，不做自定义。
+用 Carbon `RegisterEventHotKey` 实现——它是唯一不需要辅助功能（Accessibility）授权的全局热键方案。
+
+组合被别的 App 占用时注册会失败（返回 false），此时前台跑一次能看到 `registered=false`
+（`open` 起的进程 NSLog 不落盘，只有前台跑才看得到这行）：
+
+```bash
+~/Applications/CCDesk.app/Contents/MacOS/CCDesk     # 前台跑，读启动日志
+# CCDesk hotkey opt-cmd-D registered=true
+```
+
+**签名**：`build-app.sh` 末尾做一次 ad-hoc 重签（`codesign --sign - --identifier com.ccdesk.app`），
+不是开发者签名/公证。这步不能省：swift build 产物的签名标识是 `CCDesk`，与 `CFBundleIdentifier`
+不符时 `usernotificationsd` 直接拒授权（日志 `requestAuthorization not allowed: com.ccdesk.app`）。
+没有开发者证书，所以 .app 若被拷贝/下载带上 quarantine 标记会被 Gatekeeper 拦，
+在 Finder 里右键 →「打开」放行一次即可（`build-app.sh` 就地生成的产物无 quarantine，实测直接打开）。
 
 ## `~/.ccdesk/` 文件说明
 
@@ -139,7 +162,7 @@ App 只调 `/sessions`（`/health` 它压根不碰），所以徽标 ⚠︎ 说�
 ## P1 已知限制
 
 1. **`why` 输出 `决定 None / 决定者 None` 是预期，不是故障** —— P1 observe-only，没有任何组件写 decision 字段（闸门未安装）。P2 闸门上线后此输出才有实义。
-2. **通知功能当前不可用** —— 裸 SPM 可执行没有 app bundle，UserNotifications 拒绝工作。App 徽标与下拉列表不受影响，正常工作。
+2. **通知可用性取决于运行形态** —— `.app`（`ccdesk-app install`）下 `Bundle.main.bundleIdentifier` = `com.ccdesk.app`，代码里那两处 bundle 守卫放行，通知授权实测已授予（系统日志 `didGrant: 1 hasError: 0`）；裸可执行（`ccdesk-app start`）没有 app bundle、`bundleIdentifier` 是 nil，守卫直接跳过通知，**仍不可用**。徽标与面板两种形态都正常。「会话转 waiting 时通知真的弹出来」尚未人工核对。
 3. **四类异常里只有 `dangling_request` 可达** —— `empty_allow` / `silent_stall` / `duplicate_allow` 三个分支都要求 `decision` 非 None（`duplicate_allow` 还额外要 `allow_count`），而 P1 全树无人写 `decision`，所以这三类恒不触发、是盲区。P2 的 decision writer 上线并维护 `allow_count` 后才解除。
 4. **闸门未安装（有意）** —— 骨架在 `hooks/ccdesk_gate.py`（连接失败/垃圾输入/超时均自降级为 ask，永不 deny），但不在任何 settings.json 里。先攒真实请求样本，再写白名单。
 
@@ -147,7 +170,6 @@ App 只调 `/sessions`（`/health` 它压根不碰），所以徽标 ⚠︎ 说�
 
 - 闸门安装 + 三态决策（allow/ask/deny）—— 骨架已实现，**待安装**；updatedInput 代答路径**待验证**
 - decision writer + `allow_count` 写入契约 —— **P2 必做**（否则限制 1/3 无法解除）
-- 打包 .app 激活通知 —— **P2**；必须同时加 in-flight guard 修 Timer 竞态
 - ledger 超 50MB 时加过滤路由 —— **P2**
 - collector known 集合增量维护（账本 >5 万行）—— **P2**
 - `dialog open` 分支复现（U1，peer advance 现象）—— **待复现**，spike 记录在 `spikes/u1-peer-advance.md`
@@ -156,5 +178,9 @@ App 只调 `/sessions`（`/health` 它压根不碰），所以徽标 ⚠︎ 说�
 
 ```bash
 /opt/homebrew/Caskroom/miniconda/base/bin/python3 -m pytest -v   # 87 passed
-cd app/CCDesk && swift test                                       # 3 passed
+cd app/CCDesk && swift test                                       # 21 passed
+sh app/CCDesk/Tests/CCDeskTests/bundle_structure_test.sh          # 打包产物结构，8 条断言
 ```
+
+打包产物那条是 shell 测（真跑一次 `build-app.sh` 装到临时目录再断言），没进 `swift test`：
+在 `swift test` 里再跑 `swift build -c release` 会撞同一个 `.build` 锁。
