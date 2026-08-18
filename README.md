@@ -159,12 +159,17 @@ dangling_request   935c8425155cd84a  AskUserQuestion «{"questions":[...]» 无�
 
 ```bash
 ~/ccdesk/bin/ccdesk-app install     # swift build -c release → 打包装到 ~/Applications/CCDesk.app
+~/ccdesk/bin/ccdesk-app start       # 装了 .app 就起 .app，没装则起裸可执行
+~/ccdesk/bin/ccdesk-app stop        # 两种形态都能停
+~/ccdesk/bin/ccdesk-app status      # App（两种形态分别报）+ daemon + health
 ```
 
-装完从启动台 / Spotlight 搜 `CCDesk` 打开。菜单栏徽标显示等待计数，点开看三区面板；
-App 每 3s 拉一次 `/sessions`，该接口取不到时徽标变 `⚠︎`。
+装完也可以从启动台 / Spotlight 搜 `CCDesk` 打开。菜单栏徽标显示等待计数，点开看三区面板。
 开机自启：系统设置 → 通用 → 登录项与扩展 →「登录时打开」里加 `~/Applications/CCDesk.app`。
-开发跑法仍在（`ccdesk-app start` 直接起裸可执行），但**没有 bundle 就没有通知**（见已知限制 2）。
+
+App 有两种运行形态，**行为差别只在通知**（见已知限制 2）：`.app` 有 bundle identifier，通知可用；
+裸可执行（`.build/release/CCDesk`）没有，通知被守卫跳过。两者会抢同一个 status item，所以
+`start` 优先起 `.app`、`install` 会先停掉裸实例；`status` 把两种分别列出来，同时在跑就是需要处理的异常。
 
 **⌥⌘D 唤出面板** —— 不依赖徽标是否可见的入口。菜单栏空间不足时 macOS 会**静默隐藏**排在后面的
 第三方 status item：本机是刘海屏 + 十几个常驻应用（Lark / Figma / cmux / aTrust…），CC 徽标就这么
@@ -209,9 +214,20 @@ P2 之后重建会丢更多：`decision` / `decided_by` 是闸门写的，events
 **1. daemon 不起 / 不采集**
 `launchctl list | grep ccdesk` 看 PID 是否存在 → 看 `~/.ccdesk/logs/stderr.log` → `/health` 的 `collect_age_s` 若持续增长（远超 3s）说明采集线程已死，需重启 daemon。
 
-**2. App 徽标显示 ⚠︎**
-App 只调 `/sessions`（`/health` 它压根不碰），所以徽标 ⚠︎ 说明的是 `/sessions` 失败：要么 daemon 没在跑（见上条），要么接口返回形状漂移（版本不匹配）。
-用 `curl http://127.0.0.1:8787/sessions` 区分这两种情况——注意 `/sessions` 是唯一会 fork `claude` 子进程的路由，它可能在 daemon 本身活着时单独失败。
+**2. App 徽标显示 ⚠︎ / 面板空白**
+面板每 3s 并发拉三个接口：`/sessions`（会话区）、`/recon/auth`（异常区）、`/health`（底部健康条）。
+徽标 ⚠︎ 由 `/sessions` 失败触发；另两个失败只会让对应区块空着，徽标仍正常。
+
+逐个 curl 定位是哪个挂了：
+
+```bash
+curl -s http://127.0.0.1:8787/sessions   # 挂了 → 徽标 ⚠︎
+curl -s http://127.0.0.1:8787/recon/auth # 挂了 → 异常区空
+curl -s http://127.0.0.1:8787/health     # 挂了 → 健康条空
+```
+
+注意 `/sessions` 是**唯一会 fork `claude` 子进程**的路由（实测 240~760ms），它可能在 daemon 本身
+活着、另两个接口都正常时单独失败——所以「徽标 ⚠︎ 但 `/health` 返回 ok」是可能的，不矛盾。
 
 **3. 账本有坏行**
 坏行不会污染正常数据：被移入 `ledger.bad.jsonl` 并计数。`recon` 输出的「坏行 N」即暴露口；N 增长说明上游 events.jsonl 出现了非预期内容，去 bad.jsonl 里看原文。

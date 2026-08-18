@@ -10,6 +10,7 @@ BUNDLE="$HOME/Applications/CCDesk.app"
 PIDFILE="/tmp/ccdesk-app.pid"
 LOGFILE="/tmp/ccdesk-app.log"
 
+# 裸可执行形态：由本脚本 nohup 起，pid 记在 PIDFILE 里。
 running_pid() {
     [ -f "$PIDFILE" ] || return 1
     pid=$(cat "$PIDFILE" 2>/dev/null) || return 1
@@ -18,9 +19,33 @@ running_pid() {
     echo "$pid"
 }
 
+# .app 形态：由 open/Finder/登录项起，不受 PIDFILE 管，只能按 bundle 路径找。
+# 匹配路径后缀而非写死 $BUNDLE，这样从别处装的副本也能被识别到。
+bundle_pid() {
+    pid=$(pgrep -f "CCDesk.app/Contents/MacOS/CCDesk" 2>/dev/null | head -1) || return 1
+    [ -n "$pid" ] || return 1
+    echo "$pid"
+}
+
 cmd_start() {
     if pid=$(running_pid); then
-        echo "已在运行 (pid $pid)"
+        echo "已在运行 (pid ${pid}，裸可执行)"
+        return 0
+    fi
+    if pid=$(bundle_pid); then
+        echo "已在运行 (pid ${pid}，.app)"
+        return 0
+    fi
+    # 装了 .app 就优先起它——通知只在有 bundle identifier 时才可用。
+    if [ -d "$BUNDLE" ]; then
+        open "$BUNDLE"
+        sleep 3
+        if pid=$(bundle_pid); then
+            echo "✅ 已启动 (pid ${pid}，.app) — 按 ⌥⌘D 唤面板"
+        else
+            echo "❌ .app 启动失败。首次打开可能被 macOS 拦下：在 Finder 里右键 →「打开」放行一次。"
+            return 1
+        fi
         return 0
     fi
     if [ ! -x "$BIN" ]; then
@@ -31,7 +56,8 @@ cmd_start() {
     echo $! > "$PIDFILE"
     sleep 3
     if pid=$(running_pid); then
-        echo "✅ 已启动 (pid $pid) — 看屏幕右上角菜单栏的 CC 徽标"
+        echo "✅ 已启动 (pid ${pid}，裸可执行) — 按 ⌥⌘D 唤面板"
+        echo "   提示：通知在裸可执行下不可用（无 bundle）。跑 'ccdesk-app install' 装 .app 可解锁。"
     else
         echo "❌ 启动后退出，日志："
         cat "$LOGFILE"
@@ -39,14 +65,22 @@ cmd_start() {
     fi
 }
 
+# 两种形态都停：裸可执行看 PIDFILE，.app 按 bundle 路径找。
 cmd_stop() {
+    stopped=0
     if pid=$(running_pid); then
         kill "$pid"
         rm -f "$PIDFILE"
-        echo "已停止 (pid $pid)"
-    else
-        echo "未在运行"
+        echo "已停止 (pid ${pid}，裸可执行)"
+        stopped=1
     fi
+    if pid=$(bundle_pid); then
+        # 精确到 bundle 可执行路径，不用 killall（那会误伤同名进程）。
+        kill "$pid"
+        echo "已停止 (pid ${pid}，.app)"
+        stopped=1
+    fi
+    [ "$stopped" = 1 ] || echo "未在运行"
 }
 
 cmd_install() {
@@ -63,14 +97,18 @@ TIP
 }
 
 cmd_status() {
+    # 两种形态各报各的——它们会抢同一个 status item，同时在跑是需要暴露的异常状态。
+    found=0
     if pid=$(running_pid); then
         # ${pid} 的花括号不能省：变量后紧跟中文时 sh 会把多字节字符并进变量名。
         echo "App:    运行中 (pid ${pid}，裸可执行)"
-    elif pid=$(pgrep -f "CCDesk.app/Contents/MacOS/CCDesk" | head -1) && [ -n "$pid" ]; then
-        echo "App:    运行中 (pid ${pid}，.app)"
-    else
-        echo "App:    未运行"
+        found=1
     fi
+    if pid=$(bundle_pid); then
+        echo "App:    运行中 (pid ${pid}，.app)"
+        found=1
+    fi
+    [ "$found" = 1 ] || echo "App:    未运行"
     if launchctl list 2>/dev/null | grep -q com.ccdesk.daemon; then
         echo "daemon: 常驻中 ($(launchctl list | awk '/com.ccdesk.daemon/{print "pid "$1}'))"
     else
