@@ -75,6 +75,56 @@ def _cmd_recon() -> int:
     return 0
 
 
+def _cmd_gate(action: str) -> int:
+    """闸门装卸。这条路径直接改用户的 settings.json，不走 daemon HTTP。"""
+    from ccdesk import gate_install
+
+    if action == "status":
+        state = gate_install.status()
+        if state["installed"]:
+            print(f"闸门已安装  matcher={state['matcher']}  →  {gate_install.SETTINGS_PATH}")
+        else:
+            print(f"闸门未安装  →  {gate_install.SETTINGS_PATH}")
+        return 0
+
+    try:
+        result = (gate_install.install() if action == "install"
+                  else gate_install.uninstall())
+    except ValueError as exc:
+        print(f"拒绝写入：{exc}", file=sys.stderr)
+        return 2
+
+    messages = {
+        "installed": f"闸门已安装  matcher={gate_install.MATCHER}  →  {gate_install.SETTINGS_PATH}\n"
+                     "提示：已在跑的会话要重启才会加载新 hook；"
+                     "原文件已备份为 settings.json.ccdesk-bak.<时间戳>",
+        "already": "闸门早已安装，未做改动",
+        "removed": f"闸门已卸载  →  {gate_install.SETTINGS_PATH}（已备份）",
+        "absent": "闸门本来就没装，未做改动",
+    }
+    print(messages[result])
+    return 0
+
+
+def _cmd_replay(since: str) -> int:
+    from ccdesk import replay as replay_mod
+
+    seconds = replay_mod.parse_since(since)
+    body = _get(f"/replay?since={int(seconds)}")
+    rows = body["rows"]
+    changed = [r for r in rows if r["changed"]]
+    print(f"重放 {len(rows)} 条请求，决定会变的 {len(changed)} 条\n")
+    for row in rows:
+        if not row["changed"]:
+            continue
+        loosened = " ⚠️ 规则放松" if row["now"] == "allow" else ""
+        print(f"{row['req_id']}  {row.get('tool_name','')}  "
+              f"{row['was']} → {row['now']}{loosened}")
+    if not rows:
+        print("（窗口内没有可重放的请求：P1 老账本没存 tool_input，重放不了）")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="ccdesk")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -83,6 +133,10 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("trace", "why"):
         p = sub.add_parser(name)
         p.add_argument("req_id")
+    gate = sub.add_parser("gate")
+    gate.add_argument("action", choices=("install", "uninstall", "status"))
+    rp = sub.add_parser("replay")
+    rp.add_argument("--since", default="24h", help="时间窗，如 30m / 24h / 7d")
     args = parser.parse_args(argv)
 
     try:
@@ -94,6 +148,10 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_trace(args.req_id)
         if args.cmd == "why":
             return _cmd_why(args.req_id)
+        if args.cmd == "gate":
+            return _cmd_gate(args.action)
+        if args.cmd == "replay":
+            return _cmd_replay(args.since)
     except (urllib.error.URLError, ConnectionError, OSError, TimeoutError) as exc:
         print(f"连不上 ccdesk daemon（{BASE}）：{type(exc).__name__}。"
               f"先看 launchctl list | grep ccdesk", file=sys.stderr)

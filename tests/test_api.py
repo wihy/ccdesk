@@ -209,3 +209,14 @@ def test_decide_allow_carries_updated_input(server, monkeypatch):
     body = post(server, "/decide", payload)
     assert body["permissionDecision"] == "allow"
     assert body["updatedInput"]["answers"] == {"选啥": "A"}
+
+
+def test_replay_route_returns_rows(server):
+    """/replay 是只读的规则重放，CLI 的 replay 子命令依赖它。"""
+    body = get(server, "/replay?since=86400")
+    assert "rows" in body and isinstance(body["rows"], list)
+    assert body["since_s"] == 86400.0
+
+
+def test_replay_route_tolerates_bad_since(server):
+    assert get(server, "/replay?since=abc")["since_s"] == 86400.0

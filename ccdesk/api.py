@@ -7,11 +7,13 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs
 
 from ccdesk import config, decisions, judge, sources
 from ccdesk.collector import Collector
 from ccdesk.ledger import Ledger
 from ccdesk.recon_auth import reconcile
+from ccdesk.replay import replay as replay_rules
 from ccdesk.sources import list_sessions
 
 OBSERVE_ONLY_REASON = "ccdesk: observe-only (P1)"
@@ -116,6 +118,15 @@ def make_server(host: str, port: int, state: AppState) -> ThreadingHTTPServer:
                 self._send({"anomalies": [asdict(a) for a in anomalies],
                             "checked": len(recent),
                             "bad_line_count": state.ledger.bad_line_count})
+            elif path == "/replay":
+                query = parse_qs(self.path.split("?", 1)[1] if "?" in self.path else "")
+                try:
+                    since_s = float(query.get("since", ["86400"])[0])
+                except (TypeError, ValueError):
+                    since_s = 86400.0
+                now = datetime.now(timezone.utc)
+                rows = replay_rules(state.ledger.read_merged(), since_s, now.isoformat())
+                self._send({"rows": rows, "since_s": since_s})
             else:
                 self._send({"error": "not found"}, status=404)
 
