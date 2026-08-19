@@ -241,7 +241,7 @@ curl -s http://127.0.0.1:8787/health     # 挂了 → 健康条空
 ## P1 已知限制
 
 1. **`why` 输出 `决定 None / 决定者 None` 是预期，不是故障** —— P1 observe-only，没有任何组件写 decision 字段（闸门未安装）。P2 闸门上线后此输出才有实义。
-2. **通知可用性取决于运行形态** —— `.app`（`ccdesk-app install`）下 `Bundle.main.bundleIdentifier` = `com.ccdesk.app`，代码里那两处 bundle 守卫放行，通知授权实测已授予（系统日志 `didGrant: 1 hasError: 0`）；裸可执行（`ccdesk-app start`）没有 app bundle、`bundleIdentifier` 是 nil，守卫直接跳过通知，**仍不可用**。徽标与面板两种形态都正常。「会话转 waiting 时通知真的弹出来」尚未人工核对。
+2. **通知可用性取决于运行形态** —— `.app`（`ccdesk-app install`）下 `Bundle.main.bundleIdentifier` = `com.ccdesk.app`，代码里那两处 bundle 守卫放行，通知授权实测已授予（系统日志 `didGrant: 1 hasError: 0`）；裸可执行（`ccdesk-app start`）没有 app bundle、`bundleIdentifier` 是 nil，守卫直接跳过通知，**仍不可用**。徽标与面板两种形态都正常。「会话转 waiting 时通知真的弹出来」已人工核对通过。
 3. **四类异常里只有 `dangling_request` 可达** —— `empty_allow` / `silent_stall` / `duplicate_allow` 三个分支都要求 `decision` 非 None（`duplicate_allow` 还额外要 `allow_count`），而 P1 全树无人写 `decision`，所以这三类恒不触发、是盲区。P2 的 decision writer 上线并维护 `allow_count` 后才解除。
 4. **闸门未安装（有意）** —— 骨架在 `hooks/ccdesk_gate.py`（连接失败/垃圾输入/超时均自降级为 ask，永不 deny），但不在任何 settings.json 里。先攒真实请求样本，再写白名单。
 
