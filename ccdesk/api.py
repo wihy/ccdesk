@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from ccdesk import config, sources
+from ccdesk import config, decisions, judge, sources
 from ccdesk.collector import Collector
 from ccdesk.ledger import Ledger
 from ccdesk.recon_auth import reconcile
@@ -32,6 +33,8 @@ class AppState:
     ledger: Ledger
     collector: Collector
     health: CollectHealth = field(default_factory=CollectHealth)
+    # 判官结论缓存，键=tool_name+参数指纹。进程内即可，重启重建不影响正确性。
+    judge_cache: dict = field(default_factory=dict)
 
 
 def _now_iso() -> str:
@@ -118,11 +121,41 @@ def make_server(host: str, port: int, state: AppState) -> ThreadingHTTPServer:
 
         def do_POST(self) -> None:
             length = int(self.headers.get("Content-Length", 0))
-            self.rfile.read(length)
-            if self.path.split("?", 1)[0] == "/decide":
-                self._send({"permissionDecision": "ask", "reason": OBSERVE_ONLY_REASON})
-            else:
+            raw = self.rfile.read(length)
+            if self.path.split("?", 1)[0] != "/decide":
                 self._send({"error": "not found"}, status=404)
+                return
+
+            started = time.monotonic()
+            try:
+                payload = json.loads(raw.decode("utf-8") or "{}")
+            except (ValueError, UnicodeDecodeError):
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+
+            try:
+                verdict = judge.decide(payload, state.judge_cache)
+            except Exception:            # noqa: BLE001 — daemon 侧异常绝不能变成会话阻塞
+                logging.exception("judge 异常，降级 ask")
+                verdict = judge.Verdict("ask", "daemon_error")
+            latency_ms = int((time.monotonic() - started) * 1000)
+
+            # 落账失败不改变已经出的决定——会话不能为了记账等在那里。
+            try:
+                req_id = decisions.build_req_id(payload)
+                merged = state.ledger.read_merged()
+                decisions.record_decision(
+                    state.ledger, req_id, verdict.decision, verdict.decided_by,
+                    verdict.confidence, latency_ms,
+                    decisions.current_allow_count(merged, req_id))
+            except Exception:            # noqa: BLE001
+                logging.exception("decision 落账失败")
+
+            body = {"permissionDecision": verdict.decision, "reason": verdict.decided_by}
+            if verdict.updated_input is not None:
+                body["updatedInput"] = verdict.updated_input
+            self._send(body)
 
         def log_message(self, *args) -> None:
             pass
