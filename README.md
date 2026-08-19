@@ -277,7 +277,11 @@ curl -s http://127.0.0.1:8787/health     # 挂了 → 健康条空
 坏行不会污染正常数据：被移入 `ledger.bad.jsonl` 并计数。`recon` 输出的「坏行 N」即暴露口；N 增长说明上游 events.jsonl 出现了非预期内容，去 bad.jsonl 里看原文。
 
 **4. `/health` 的 `session_source` 是 `file`**
-会话主源 `claude agents --json` 取不到，已降级读 `~/.claude/sessions/*.json`。降级态的输出与主源实测一致，功能不受影响，但要查为什么：`logs/daemon.log` 里有一条 warning 写着降级原因（只在状态**变成** file 时记一条，避免 3s 一次刷爆日志）。最常见原因是 plist 缺 `PATH`（见「daemon」一节）。
+会话主源 `claude agents --json` 取不到，已降级读 `~/.claude/sessions/*.json`。降级态的输出与主源实测一致，功能不受影响，但要查为什么：`logs/daemon.log` 里有一条 warning 写着降级原因（只在状态**变成** file 时记一条，避免 3s 一次刷爆日志）。已知两个原因：**① plist 缺 `PATH`**（见「daemon」一节）；
+**② 机器负载高时 `claude agents --json` 超过 daemon 的 10s 超时**——本机在同时起新会话时
+实测到过（`TimeoutExpired: Command '['claude','agents','--json']' timed out after 10.0 seconds`）。
+第二种是暂时的，负载回落后 `session_source` 会自己变回 `cli`，期间 `/sessions` 输出与主源一致、
+功能不受影响。
 
 **5. 某条请求永远没有 `outcome`**
 先比对该工具在 `PermissionRequest` 与 `PostToolUse` 两侧的 `tool_input` 键集。CC 会在执行前改写 `tool_input`（已知：`AskUserQuestion` 的结局侧会多出 `answers` / `annotations`），键集不同则两侧指纹不同、`req_id` 对不上。把新发现的差异键补进 `ccdesk/ledger.py` 的 `VOLATILE_INPUT_KEYS`（按工具名，不要无差别丢键）。
