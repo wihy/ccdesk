@@ -46,11 +46,16 @@ def current_allow_count(merged: dict, req_id: str) -> int:
 
 def record_decision(ledger: Ledger, req_id: str, decision: str, decided_by: str,
                     confidence: float | None, latency_ms: int,
-                    allow_count_before: int) -> dict:
+                    allow_count_before: int, payload: dict | None = None) -> dict:
     """append 一条决策行。
 
     allow_count 只在 allow 时递增 —— duplicate_allow 对账（同一 req_id 出现
     ≥2 次 allow = 幂等键失效）唯一的判据就是它。
+
+    带 payload 时顺手补齐 tool_input 等原始输入：collector 那侧只存
+    input_digest 摘要（体积/隐私考虑），replay 拿它重放不了。闸门是同步的、
+    比 3s 轮询的 collector 先看到请求，由它补这一份最自然；而且只有真正
+    过了闸门的请求才会存，量很小。
     """
     row = {
         "req_id": req_id,
@@ -62,5 +67,19 @@ def record_decision(ledger: Ledger, req_id: str, decision: str, decided_by: str,
     }
     if confidence is not None:
         row["confidence"] = float(confidence)
+    if isinstance(payload, dict):
+        tool_input = payload.get("tool_input")
+        if isinstance(tool_input, dict):
+            row["tool_input"] = tool_input
+            # 与 collector 同一个摘要口径，否则 trace 的「工具」行会是空的 «»
+            from .events import _digest
+            row["input_digest"] = _digest(tool_input)
+        for key in ("tool_name", "session_id", "prompt_id", "cwd", "permission_mode"):
+            value = payload.get(key)
+            if value:
+                row[key] = value
+        # 闸门看到请求的时刻就是请求发生的时刻；collector 后来补的
+        # ts_request 会合并到同一 req_id 上，不冲突。
+        row.setdefault("ts_request", row["ts_decision"])
     ledger.append(row)
     return row

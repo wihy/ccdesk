@@ -75,3 +75,42 @@ def test_confidence_none_is_not_written(tmp_path):
 def test_current_allow_count_tolerates_garbage(tmp_path):
     assert decisions.current_allow_count({"r1": {"allow_count": "x"}}, "r1") == 0
     assert decisions.current_allow_count({}, "nope") == 0
+
+
+def test_decision_row_carries_tool_input_for_replay(tmp_path):
+    """replay 要能重放，账本里就必须有 tool_input。
+
+    collector 那侧只存 input_digest 摘要（体积/隐私考虑），重放不了；
+    而闸门侧是同步的、比 collector 先看到请求，由它补齐这份原始输入最自然，
+    且只有真正过了闸门的 AskUserQuestion 才会存，量很小。
+    """
+    led = _ledger(tmp_path)
+    payload = {"session_id": "s1", "prompt_id": "p1", "tool_name": "AskUserQuestion",
+               "tool_input": {"questions": [{"question": "q", "options": [{"label": "A"}],
+                                             "multiSelect": False}]}}
+    decisions.record_decision(led, decisions.build_req_id(payload), "ask",
+                              "judge_unavailable", None, 5, 0, payload=payload)
+    row = led.read_merged()[decisions.build_req_id(payload)]
+    assert row["tool_input"] == payload["tool_input"]
+    assert row["tool_name"] == "AskUserQuestion"
+    assert row["session_id"] == "s1"
+    assert row["ts_request"]
+
+
+def test_decision_row_without_payload_stays_minimal(tmp_path):
+    """不传 payload 时不得凭空造字段。"""
+    led = _ledger(tmp_path)
+    decisions.record_decision(led, "r1", "ask", "x", None, 1, 0)
+    row = led.read_merged()["r1"]
+    assert "tool_input" not in row
+
+
+def test_decision_row_has_input_digest_for_trace(tmp_path):
+    """trace 的「工具」行读 input_digest；不写它那行就是空的 «»。口径与 collector 一致。"""
+    led = _ledger(tmp_path)
+    payload = {"session_id": "s", "prompt_id": "p", "tool_name": "AskUserQuestion",
+               "tool_input": {"questions": [{"question": "选哪个？"}]}}
+    rid = decisions.build_req_id(payload)
+    decisions.record_decision(led, rid, "ask", "judge_unavailable", None, 5, 0, payload=payload)
+    digest = led.read_merged()[rid]["input_digest"]
+    assert digest and "选哪个" in digest

@@ -170,7 +170,7 @@ def make_server(host: str, port: int, state: AppState) -> ThreadingHTTPServer:
                 decisions.record_decision(
                     state.ledger, req_id, verdict.decision, verdict.decided_by,
                     verdict.confidence, latency_ms,
-                    decisions.current_allow_count(merged, req_id))
+                    decisions.current_allow_count(merged, req_id), payload=payload)
             except Exception:            # noqa: BLE001
                 logging.exception("decision 落账失败")
 
