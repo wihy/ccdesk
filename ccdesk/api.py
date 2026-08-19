@@ -5,7 +5,7 @@ import json
 import logging
 import time
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
 
@@ -108,9 +108,20 @@ def make_server(host: str, port: int, state: AppState) -> ThreadingHTTPServer:
                     "ts": _now_iso(),
                 })
             elif path == "/ledger":
-                merged = state.ledger.read_merged()
+                # 账本小的时候全量读（当前 9.8KB，这才是常态）；真长到
+                # LEDGER_FILTER_BYTES 以上才退化成窗口读，免得每次请求都全文件扫描。
+                since_ts = None
+                try:
+                    if state.ledger.path.stat().st_size > config.LEDGER_FILTER_BYTES:
+                        cutoff = datetime.now(timezone.utc) - timedelta(
+                            seconds=config.RECON_WINDOW_S)
+                        since_ts = cutoff.isoformat()
+                except OSError:
+                    pass
+                merged = state.ledger.read_merged(since_ts=since_ts)
                 self._send({"records": list(merged.values()),
-                            "bad_line_count": state.ledger.bad_line_count})
+                            "bad_line_count": state.ledger.bad_line_count,
+                            "filtered_since": since_ts})
             elif path == "/recon/auth":
                 now = datetime.now(timezone.utc)
                 recent = _within_window(state.ledger.read_merged(), now)

@@ -220,3 +220,17 @@ def test_replay_route_returns_rows(server):
 
 def test_replay_route_tolerates_bad_since(server):
     assert get(server, "/replay?since=abc")["since_s"] == 86400.0
+
+
+def test_ledger_route_does_not_filter_small_ledger(server):
+    """小账本走全量读 —— 阈值内行为必须与加过滤前完全一致。"""
+    body = get(server, "/ledger")
+    assert body["filtered_since"] is None
+    assert body["records"][0]["req_id"] == "r1"
+
+
+def test_ledger_route_filters_when_over_threshold(server, monkeypatch):
+    """超阈值才退化成窗口读。用 monkeypatch 把阈值调到 0 来验证这条分支真的存在。"""
+    from ccdesk import config
+    monkeypatch.setattr(config, "LEDGER_FILTER_BYTES", 0)
+    assert get(server, "/ledger")["filtered_since"] is not None
