@@ -35,7 +35,7 @@ launchd 常驻 Python daemon 做三态决策与四类对账，再用 Swift 菜�
 | U2 | ~~hook `timeout` 字段的上限与默认值~~ | **已验证**（`spikes/u2-hook-timeout.md`）：实测 30/60/120/300s 全部生效，未见上限（结论 ≥300s）；超时代价=工具调用不执行，但是 fall through 到 CC 默认权限管线而非必然 deny。`config.GATE_DEADLINE_S=7.5` 可用，CC 侧 hook `timeout` 建议设 10s |
 | U3 | FleetView 的 `peek-reply` 是否有可脚本化入口 | P1 探查；若有则优先复用，替代自研推进通道 |
 | U4 | `waitingFor` 的完整取值域（已观测到两个：`dialog open` 见于权限弹窗；`input needed` 见于 AskUserQuestion，实测于 U1 spike） | 仍未穷尽，P1 边跑边收集，写进枚举表 |
-| U5 | `PreToolUse` 闸门能否用 `updatedInput` 预填 AskUserQuestion 的 `answers` 从而**自动作答** | **P2 首个任务验证**。线索见 `spikes/u1-peer-advance.md` 末节（AskUserQuestion 确实经过闸门；hook 支持 `updatedInput`；`answers` 字段描述为「由 permission component 收集」）。若不成立，第五节 `ask_question` 风险类降级为「只通知、不自动」 |
+| U5 | ~~`PreToolUse` 闸门能否用 `updatedInput` 预填 AskUserQuestion 的 `answers` 从而自动作答~~ | **已验证成立**（`spikes/u5-updated-input-auto-answer.md`，2026-08-19）：hook 返回 `allow` + `updatedInput` 后**不弹窗**、会话直接消费注入的答案（实测输出 `USER-PICKED=选项A`，弹窗特征命中 0）。机制核心是 CC 内部 `if(!updatedInput && requiresUserInteraction()) return null` —— 带 `updatedInput` 即跳过该检查。⚠️ 仅测单问题/单选/合法 label；多问题、multiSelect、非法 label 未测；机制随 CC 版本可能变，P2 需加启动自检 |
 
 ---
 
