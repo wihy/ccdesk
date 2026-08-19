@@ -315,7 +315,17 @@ curl -s http://127.0.0.1:8787/health     # 挂了 → 健康条空
    实测已授予（系统日志 `didGrant: 1 hasError: 0`）；裸可执行（`ccdesk-app start`）没有
    app bundle、`bundleIdentifier` 是 nil，守卫直接跳过通知，**仍不可用**。徽标与面板两种形态
    都正常。「会话转 waiting 时通知真的弹出来」已人工核对通过。
-5. **`replay` 只能重放 P2 之后的请求** —— 重放需要完整 `tool_input`，而 collector 那侧
+5. **两处「大账本才会疼」的性能债，已知未修** —— `read_merged(since_ts=...)` 的过滤
+   发生在 `read_text()` 与逐行 `json.loads` **之后**，省下的只有 dict 合并，并没有真正
+   少读磁盘；而 `/decide` 每次都做全量 `read_merged` 只为取一个整数，偏偏它是闸门
+   7.5s 预算内唯一延迟敏感的路径。当前账本 11KB，读一次是微秒级，所以没动——
+   正确的修法（seek-to-tail 或维护索引）要两条一起做。
+   **触发条件**：`~/.ccdesk/ledger.jsonl` 超过 10MB，或 `ccdesk why` 的「耗时」稳定超 50ms。
+6. **`replay` 不调判官，只跑护栏** —— 重放要回答的是「规则改了会不会放松决定」，
+   而 LLM 是不确定的，走判官会让同一条记录两次重放给出不同结果，那这个问题就没法回答了。
+   所以判官那层如实标注 `judge_skipped_in_replay`，不假装判过。副作用是重放也不会
+   产生 API 费用。
+7. **`replay` 只能重放 P2 之后的请求** —— 重放需要完整 `tool_input`，而 collector 那侧
    只存 `input_digest` 摘要（体积/隐私考虑）。P2 起由闸门在落账时补上这份原始输入，所以
    P1 时期的老记录重放不了，会被跳过而不是编造。
 
