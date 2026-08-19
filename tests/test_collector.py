@@ -157,3 +157,55 @@ def test_incremental_known_still_backfills_outcome(tmp_path):
     stats = col.run_once()
     assert stats["outcomes"] == 1, "第二轮的结局必须挂上第一轮的请求，不能变成孤儿"
     assert stats["orphans"] == 0
+
+
+def test_gate_written_req_id_is_not_treated_as_orphan(tmp_path):
+    """闸门与 collector 是两条独立的写入路径。
+
+    判官放行时 CC 不会发 PermissionRequest（hook 直接放行了），所以 collector
+    从没在事件流里见过这个 req_id；但闸门已经把它写进账本了。若 known 只认
+    collector 自己写过的，这条结局就会被误判成孤儿、outcome 永远回填不上，
+    进而每条成功代答都在 600s 后触发 empty_allow 误报。
+    """
+    import json as _json
+    from ccdesk import decisions
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_text("", encoding="utf-8")
+    col = _mk(tmp_path)
+    col.run_once()                       # 首轮建立 known
+
+    payload = {"session_id": "s", "prompt_id": "p", "tool_name": "AskUserQuestion",
+               "tool_input": {"questions": [{"question": "q", "options": [{"label": "A"}],
+                                             "multiSelect": False}]}}
+    req_id = decisions.build_req_id(payload)
+    decisions.record_decision(col.ledger, req_id, "allow", "judge:haiku", 0.9, 5, 0,
+                              payload=payload)
+
+    out = {"summary": {"event": "PostToolUse"},
+           "payload": {"session_id": "s", "prompt_id": "p", "tool_name": "AskUserQuestion",
+                       "tool_input": {"questions": [{"question": "q",
+                                                     "options": [{"label": "A"}],
+                                                     "multiSelect": False}],
+                                      "answers": {"q": "A"}}}}
+    events_path.write_text(_json.dumps(out) + "\n", encoding="utf-8")
+
+    stats = col.run_once()
+    assert stats["orphans"] == 0, "闸门写的 req_id 不该被当成孤儿"
+    assert stats["outcomes"] == 1
+    assert col.ledger.read_merged()[req_id]["outcome"] == "executed"
+
+
+def test_real_orphan_still_counted(tmp_path):
+    """反向保护：真正无主的结局仍要被数出来，不能因为放宽而静默吞掉。"""
+    import json as _json
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_text("", encoding="utf-8")
+    col = _mk(tmp_path)
+    col.run_once()
+
+    out = {"summary": {"event": "PostToolUse"},
+           "payload": {"session_id": "nobody", "prompt_id": "nope", "tool_name": "Bash",
+                       "tool_input": {"command": "ls"}}}
+    events_path.write_text(_json.dumps(out) + "\n", encoding="utf-8")
+    assert col.run_once()["orphans"] == 1

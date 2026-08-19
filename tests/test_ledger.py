@@ -195,3 +195,24 @@ def test_read_merged_since_still_counts_bad_lines(tmp_path):
         fh.write("{not json\n")
     led.read_merged(since_ts="2026-08-10T00:00:00+00:00")
     assert led.bad_line_count == 1
+
+
+def test_since_filter_does_not_leave_ghost_records(tmp_path):
+    """过滤只看 ts_request，会把老请求行滤掉、却留下它的结局行。
+
+    结局行是 {req_id, outcome, ts_outcome}，没有 tool_name/session_id/digest，
+    于是 /ledger 吐出一堆没有主体的幽灵记录，App 面板和 trace 渲染成空行。
+    请求行被滤掉时，它的附属行也该一起走。
+    """
+    led = Ledger(tmp_path / "l.jsonl", tmp_path / "b.jsonl")
+    led.append({"req_id": "old", "ts_request": "2026-08-01T00:00:00+00:00",
+                "tool_name": "AskUserQuestion", "session_id": "s"})
+    led.append({"req_id": "old", "outcome": "executed",
+                "ts_outcome": "2026-08-01T00:00:05+00:00"})
+    led.append({"req_id": "new", "ts_request": "2026-08-19T00:00:00+00:00",
+                "tool_name": "AskUserQuestion", "session_id": "s"})
+    led.append({"req_id": "new", "decision": "ask", "decided_by": "judge_unavailable"})
+
+    merged = led.read_merged(since_ts="2026-08-10T00:00:00+00:00")
+    assert set(merged) == {"new"}, "老请求的结局行不该单独留下来变成幽灵"
+    assert merged["new"]["decision"] == "ask"     # 窗口内的附属行仍要合并

@@ -23,6 +23,9 @@ from dataclasses import dataclass
 
 from . import config
 
+# 目前唯一支持代答的工具。U5 只在它身上验过机制。
+SUPPORTED_TOOL = "AskUserQuestion"
+
 
 @dataclass
 class Verdict:
@@ -44,6 +47,10 @@ def guardrail_check(tool_input) -> str | None:
     question = questions[0]
     if not isinstance(question, dict):
         return "no_questions"
+    if not isinstance(question.get("question"), str) or not question["question"].strip():
+        # question 为空时 build_updated_input 会产出 {"null": answer}——
+        # 键指向一个不存在的问题，与注入非法 label 是同一类伪造。
+        return "no_question_text"
     if question.get("multiSelect"):
         return "multiselect"
     options = question.get("options")
@@ -81,12 +88,20 @@ def build_updated_input(tool_input: dict, answer: str) -> dict:
 
 
 def cache_key(payload: dict) -> str:
+    """缓存键必须**限定到会话**。
+
+    只用 tool_name+参数指纹的话，A 项目里判官对某个问题的结论会在 B 项目里
+    对同一句话直接放行、且永不过期——那正是本模块声称要防的
+    「替用户做了个他没做过的决定」。同一句话在不同上下文里答案往往不同。
+    """
     from .ledger import input_fingerprint
     tool_name = str(payload.get("tool_name") or "")
     tool_input = payload.get("tool_input")
     if not isinstance(tool_input, dict):
         tool_input = {}
-    return f"{tool_name}:{input_fingerprint(tool_input, tool_name)}"
+    session = str(payload.get("session_id") or "")
+    cwd = str(payload.get("cwd") or "")
+    return f"{session}|{cwd}|{tool_name}:{input_fingerprint(tool_input, tool_name)}"
 
 
 def _llm_available() -> bool:
@@ -140,6 +155,11 @@ def decide(payload: dict, cache: dict) -> Verdict:
     """主入口。任何一步不确定都落 ask ——「永不在不确定时 allow」。"""
     if not isinstance(payload, dict):
         return Verdict("ask", "guardrail:no_questions")
+    # 类型检查该在这一层，而不是靠安装时的 matcher。README 与 gate_install
+    # 都写明将来可能放宽 matcher；真放宽了，任何恰好带 questions 列表的工具
+    # 都会被塞进 AskUserQuestion 形状的 updatedInput，等于把它的真实入参换掉。
+    if payload.get("tool_name") != SUPPORTED_TOOL:
+        return Verdict("ask", "guardrail:unsupported_tool")
     tool_input = payload.get("tool_input")
 
     reason = guardrail_check(tool_input)

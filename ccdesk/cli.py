@@ -152,6 +152,10 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_gate(args.action)
         if args.cmd == "replay":
             return _cmd_replay(args.since)
+    except ValueError as exc:
+        # parse_since 之类已经写好了中文报错，别让它变成裸 traceback
+        print(str(exc), file=sys.stderr)
+        return 2
     except (urllib.error.URLError, ConnectionError, OSError, TimeoutError) as exc:
         print(f"连不上 ccdesk daemon（{BASE}）：{type(exc).__name__}。"
               f"先看 launchctl list | grep ccdesk", file=sys.stderr)

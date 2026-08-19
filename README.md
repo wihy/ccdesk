@@ -170,9 +170,19 @@ P1 时期这里恒输出 `None`（无人写 decision）。P2 起由 daemon 落�
 dangling_request   047429fa21c97a3c  AskUserQuestion «{"questions":[...]» 无决策  (9245s)
 dangling_request   935c8425155cd84a  AskUserQuestion «{"questions":[...]» 无决策  (536s)
 ```
-四类异常（`dangling_request` / `empty_allow` / `duplicate_allow` / `silent_stall`）的判据
-**现在全部可达**：P1 时期后三类都要求 `decision` 非 None，而那时全树无人写 decision，
-所以恒不触发；P2 的 decision writer 上线并维护 `allow_count` 之后这个盲区已解除。
+四类异常的可达性要分开说，别一句「全都可达」带过：
+
+| 异常 | 判据 | 本机现状 |
+|---|---|---|
+| `dangling_request` | 有 request 无 decision >60s | ✅ 可达 |
+| `silent_stall` | `decision=ask` 且会话仍 waiting >30min | ✅ **P2 解除**（decision 有写入方了） |
+| `empty_allow` | `decision=allow` 但无 outcome >10min | ⚠️ 结构上已解除，但**本机仍不可达** |
+| `duplicate_allow` | 同 req_id ≥2 次 allow | ⚠️ 同上 |
+
+后两类都要求 `decision == "allow"`，而 allow 只能由判官（或判官写入的缓存）产生——
+本机判官没有可用通道（见「已知限制」1），所以这两类**在配上 `ANTHROPIC_API_KEY` 之前
+仍然打不着**。P1 时期是「四类只有一类可达」，现在是「两类可达、两类待判官上线」。
+
 只看 24h 窗口内的请求，历史悬空不会永久重报。
 
 
@@ -316,7 +326,7 @@ curl -s http://127.0.0.1:8787/health     # 挂了 → 健康条空
 | 闸门安装通道（`ccdesk gate install/uninstall/status`） | ✅ 幂等 + 自动备份 + 只删自己 |
 | `updatedInput` 代答 | ✅ 沙盒实测坐实（会话从未弹窗，见下） |
 | 四层决策 + U5 四道护栏 | ✅ `guardrail → cache → judge → 降级`，永不 deny |
-| decision writer + `allow_count` | ✅ `why` 不再恒 None，四类对账判据全部可达 |
+| decision writer + `allow_count` | ✅ `why` 不再恒 None；对账从 1/4 可达变成 2/4（另两类等判官） |
 | `ccdesk replay` | ✅ 改规则前先看会把哪些 `ask` 变成 `allow` |
 | ledger 大账本窗口读 / collector known 增量 | ✅ 阈值内行为与此前逐字节一致 |
 | U1 权限弹窗分支复现 | ✅ 见 `spikes/u1-peer-advance.md` 补验节 |

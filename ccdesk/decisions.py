@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from . import config
 from .ledger import Ledger, input_fingerprint, make_req_id
 
 
@@ -46,11 +47,13 @@ def current_allow_count(merged: dict, req_id: str) -> int:
 
 def record_decision(ledger: Ledger, req_id: str, decision: str, decided_by: str,
                     confidence: float | None, latency_ms: int,
-                    allow_count_before: int, payload: dict | None = None) -> dict:
+                    allow_count_before: int = 0, payload: dict | None = None) -> dict:
     """append 一条决策行。
 
-    allow_count 只在 allow 时递增 —— duplicate_allow 对账（同一 req_id 出现
-    ≥2 次 allow = 幂等键失效）唯一的判据就是它。
+    **不写 allow_count**：它由 Ledger.read_merged 数账本里的 allow 行聚合得出。
+    存绝对值需要 read-modify-write，而 daemon 是多线程的，并发下两个请求会
+    双双写 1，把 duplicate_allow 判据架空。`allow_count_before` 参数保留只为
+    兼容既有调用方，值被忽略。
 
     带 payload 时顺手补齐 tool_input 等原始输入：collector 那侧只存
     input_digest 摘要（体积/隐私考虑），replay 拿它重放不了。闸门是同步的、
@@ -63,17 +66,25 @@ def record_decision(ledger: Ledger, req_id: str, decision: str, decided_by: str,
         "decided_by": decided_by,
         "latency_ms": int(latency_ms),
         "ts_decision": _now_iso(),
-        "allow_count": allow_count_before + (1 if decision == "allow" else 0),
     }
     if confidence is not None:
         row["confidence"] = float(confidence)
     if isinstance(payload, dict):
         tool_input = payload.get("tool_input")
         if isinstance(tool_input, dict):
-            row["tool_input"] = tool_input
             # 与 collector 同一个摘要口径，否则 trace 的「工具」行会是空的 «»
             from .events import _digest
             row["input_digest"] = _digest(tool_input)
+            # 账本 append-only、无人清理、权限 0644。collector 那侧特意只存
+            # 200 字符摘要（体积/隐私），这边为了 replay 存全量，但必须有上限——
+            # 否则粘在选项描述里的代码或凭证会原样长期留在磁盘上。
+            from .ledger import canonical_input
+            if len(canonical_input(tool_input)) <= config.TOOL_INPUT_MAX_CHARS:
+                row["tool_input"] = tool_input
+            else:
+                # 超限就只留摘要，并留个明确的标记——不静默丢弃，replay 才知道
+                # 这条为什么重放不了。
+                row["tool_input_omitted"] = "size_cap"
         for key in ("tool_name", "session_id", "prompt_id", "cwd", "permission_mode"):
             value = payload.get(key)
             if value:

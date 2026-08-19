@@ -55,3 +55,11 @@ def test_daemon_unreachable_returns_2_without_traceback(monkeypatch, capsys):
     monkeypatch.setattr(cli, "_get", boom)
     assert cli.main(["sessions"]) == 2
     assert "daemon" in capsys.readouterr().err
+
+
+def test_bad_since_prints_message_not_traceback(capsys):
+    """parse_since 精心写了中文报错，main 却没接住 ValueError，用户看到的是裸 traceback。"""
+    from ccdesk import cli
+    rc = cli.main(["replay", "--since=lastweek"])
+    assert rc != 0
+    assert "看不懂的时间窗" in capsys.readouterr().err

@@ -103,13 +103,20 @@ def post(base, path, payload):
         return json.loads(r.read().decode())
 
 
-def test_decide_rejects_non_askuserquestion_shape(server):
-    """非 AskUserQuestion 形态的输入落护栏 —— 闸门只挂 AskUserQuestion，
-    真收到别的说明配置有误，一律 ask。"""
+def test_decide_rejects_non_askuserquestion_tool(server):
+    """闸门只挂 AskUserQuestion，真收到别的工具说明配置有误 —— 在工具类型这一层就拦掉，
+    不能等到形状检查（那样 matcher 一旦放宽，任何带 questions 的工具都会被代答）。"""
     body = post(server, "/decide", {"tool_name": "Read", "tool_input": {}})
     assert body["permissionDecision"] == "ask"
-    assert body["reason"] == "guardrail:no_questions"
+    assert body["reason"] == "guardrail:unsupported_tool"
     assert "updatedInput" not in body
+
+
+def test_decide_rejects_malformed_askuserquestion_shape(server):
+    """工具对但形状不对，落形状护栏。"""
+    body = post(server, "/decide", {"tool_name": "AskUserQuestion", "tool_input": {}})
+    assert body["permissionDecision"] == "ask"
+    assert body["reason"] == "guardrail:no_questions"
 
 
 def test_unknown_path_404(server):
@@ -187,7 +194,8 @@ def test_decide_records_decision_to_ledger(server):
     row = next(r for r in records if r["req_id"] == req_id)
     assert row["decision"] == "ask"
     assert row["decided_by"] == "guardrail:multiselect"
-    assert row["allow_count"] == 0
+    # 没有 allow 行就不该有 allow_count 键（recon 侧用 .get(...,0) 兜底）
+    assert "allow_count" not in row
     assert isinstance(row["latency_ms"], int)
 
 
@@ -234,3 +242,36 @@ def test_ledger_route_filters_when_over_threshold(server, monkeypatch):
     from ccdesk import config
     monkeypatch.setattr(config, "LEDGER_FILTER_BYTES", 0)
     assert get(server, "/ledger")["filtered_since"] is not None
+
+
+def test_ledger_never_claims_allow_without_updated_input(server):
+    """账本必须记会话实际收到的决定，不能记 daemon 自己算的。
+
+    闸门对 AskUserQuestion 会把「allow 但没有 updatedInput」降级成 ask
+    （CC 会丢弃这种 allow）。daemon 若照旧记 allow，审计链就与现实相反，
+    还会让 empty_allow 对着一个从未发生的放行报警。
+    两边用同一条规则，就不会分叉。
+    """
+    from ccdesk import judge
+    import ccdesk.api as api_mod
+
+    # 造一个「判官给了 allow 但没给 updated_input」的畸形裁决
+    monkey = judge.Verdict("allow", "judge:haiku", 0.99, None)
+    orig = judge.decide
+    api_mod.judge.decide = lambda p, c: monkey
+    try:
+        payload = {"session_id": "sX", "prompt_id": "pX", "tool_name": "AskUserQuestion",
+                   "tool_input": {"questions": [{"question": "q", "header": "h",
+                                                 "options": [{"label": "A"}],
+                                                 "multiSelect": False}]}}
+        body = post(server, "/decide", payload)
+        assert body["permissionDecision"] == "ask"
+        assert "updatedInput" not in body
+
+        from ccdesk.decisions import build_req_id
+        row = next(r for r in get(server, "/ledger")["records"]
+                   if r["req_id"] == build_req_id(payload))
+        assert row["decision"] == "ask", "账本不得声称 allow"
+        assert "allow_count" not in row, "allow_count 不得为一次没发生的放行递增"
+    finally:
+        api_mod.judge.decide = orig

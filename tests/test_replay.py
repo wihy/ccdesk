@@ -42,18 +42,14 @@ def test_replay_skips_records_without_tool_input():
     assert replay.replay(merged, 3600, NOW) == []
 
 
-def test_replay_does_not_use_live_cache(monkeypatch):
-    """重放看的是规则，不是历史缓存 —— 否则每条都会被缓存染成 allow。"""
-    seen = []
-    real_decide = replay.judge.decide
-
-    def spy(payload, cache):
-        seen.append(cache)
-        return real_decide(payload, cache)
-
-    monkeypatch.setattr(replay.judge, "decide", spy)
-    replay.replay({"r1": _rec("r1", "ask", "2026-08-19T05:59:00+00:00")}, 3600, NOW)
-    assert seen and all(c == {} for c in seen)
+def test_replay_is_reproducible(monkeypatch):
+    """同一份账本重放两次必须逐字相同 —— 这是「规则改动会不会放松决定」
+    这个问题能被回答的前提。走判官就做不到（LLM 不确定），所以重放只跑护栏。"""
+    monkeypatch.setattr(replay.judge, "_llm_available", lambda: True)
+    monkeypatch.setattr(replay.judge, "_call_llm_judge", lambda *a, **k: ("A", 0.99))
+    merged = {"r1": _rec("r1", "ask", "2026-08-19T05:59:00+00:00"),
+              "r2": _rec("r2", "allow", "2026-08-19T05:59:00+00:00", multiselect=True)}
+    assert replay.replay(merged, 3600, NOW) == replay.replay(merged, 3600, NOW)
 
 
 def test_replay_never_writes_ledger(tmp_path):
@@ -81,3 +77,42 @@ def test_parse_since(text, seconds):
 def test_parse_since_rejects_garbage():
     with pytest.raises(ValueError):
         replay.parse_since("later")
+
+
+def test_replay_handles_naive_timestamp_without_crashing():
+    """时区混用不能把 /replay 整条路由打 500。
+
+    api.py 的 _within_window 早就防了这一手（注释写着「含时区混用」），
+    抽到 replay 时把这道防护丢了 —— 实测确实抛
+    TypeError: can't subtract offset-naive and offset-aware datetimes。
+    """
+    merged = {"r1": _rec("r1", "ask", "2026-08-19T05:59:00")}      # 无时区偏移
+    rows = replay.replay(merged, 3600, NOW)
+    assert len(rows) == 1          # 判不了窗口就保留，不崩
+
+
+def test_replay_handles_aware_row_with_naive_now():
+    """反向组合同样不能崩。"""
+    merged = {"r1": _rec("r1", "ask", "2026-08-19T05:59:00+00:00")}
+    assert len(replay.replay(merged, 3600, "2026-08-19T06:00:00")) == 1
+
+
+def test_replay_never_calls_the_llm_judge(monkeypatch):
+    """重放必须只跑确定性的那几层（护栏），绝不调 LLM 判官。
+
+    两个理由，第二个才是主要的：
+    * 成本：`replay --since=7d` 会对每条记录串行发一次付费 API 请求，
+      CLI 10s 就超时了而 daemon 还在继续烧。安全网不该是最贵的命令。
+    * **可复现性**：LLM 是不确定的，同一条记录两次重放可能给出不同结果——
+      那样「规则改动会不会放松决定」这个问题根本没法回答。重放要看的是
+      规则，不是模型今天的心情。
+    """
+    calls = []
+    monkeypatch.setattr(replay.judge, "_llm_available", lambda: True)
+    monkeypatch.setattr(replay.judge, "_call_llm_judge",
+                        lambda *a, **k: calls.append(1) or ("A", 0.99))
+    merged = {"r1": _rec("r1", "ask", "2026-08-19T05:59:00+00:00")}
+    rows = replay.replay(merged, 3600, NOW)
+    assert calls == [], "重放不得触发任何 LLM 调用"
+    assert rows[0]["now"] == "ask"
+    assert rows[0].get("now_by") == "judge_skipped_in_replay"

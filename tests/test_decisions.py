@@ -36,7 +36,8 @@ def test_record_decision_appends_row(tmp_path):
     row = decisions.record_decision(led, "r1", "allow", "allowlist:R01", 1.0, 12, 0)
     assert row["decision"] == "allow"
     assert row["decided_by"] == "allowlist:R01"
-    assert row["allow_count"] == 1
+    # 决策行本身不带 allow_count —— 它由 read_merged 数 allow 行聚合出来
+    assert "allow_count" not in row
     merged = led.read_merged()
     assert merged["r1"]["decision"] == "allow"
     assert merged["r1"]["allow_count"] == 1
@@ -114,3 +115,70 @@ def test_decision_row_has_input_digest_for_trace(tmp_path):
     decisions.record_decision(led, rid, "ask", "judge_unavailable", None, 5, 0, payload=payload)
     digest = led.read_merged()[rid]["input_digest"]
     assert digest and "选哪个" in digest
+
+
+def test_allow_count_is_race_free_under_concurrency(tmp_path):
+    """两个线程同时为同一 req_id 落 allow，最终 allow_count 必须是 2。
+
+    存绝对值 + read-modify-write 在 ThreadingHTTPServer 下会双双读到 0、
+    双双写 1，read_merged 又是 last-wins，于是 duplicate_allow（recon 里
+    「幂等键失效」的唯一判据）被静默架空。改成由账本里的 allow 行计数得出，
+    append-only 本身就是原子的，没有中间状态可竞争。
+    """
+    import threading
+    led = _ledger(tmp_path)
+    payload = {"session_id": "s", "prompt_id": "p", "tool_name": "AskUserQuestion",
+               "tool_input": {"questions": [{"question": "q"}]}}
+    rid = decisions.build_req_id(payload)
+
+    barrier = threading.Barrier(2)
+
+    def worker():
+        barrier.wait()
+        decisions.record_decision(led, rid, "allow", "cache", 0.9, 1, 0, payload=payload)
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert decisions.current_allow_count(led.read_merged(), rid) == 2
+
+
+def test_allow_count_counts_only_allow_rows(tmp_path):
+    led = _ledger(tmp_path)
+    decisions.record_decision(led, "r1", "allow", "cache", 0.9, 1, 0)
+    decisions.record_decision(led, "r1", "ask", "judge_unavailable", None, 1, 0)
+    decisions.record_decision(led, "r1", "allow", "cache", 0.9, 1, 0)
+    assert decisions.current_allow_count(led.read_merged(), "r1") == 2
+
+
+def test_tool_input_is_size_capped(tmp_path):
+    """闸门落账写的是完整 tool_input，账本 append-only 无人清理、权限 0644。
+
+    collector 那侧特意只存 200 字符摘要（体积/隐私考虑），这边不能无上限地
+    把整份问题文本连同可能粘贴其中的代码/凭证原样落盘。超限就退回只存摘要。
+    """
+    led = _ledger(tmp_path)
+    huge = "x" * 50_000
+    payload = {"session_id": "s", "prompt_id": "p", "tool_name": "AskUserQuestion",
+               "tool_input": {"questions": [{"question": huge,
+                                             "options": [{"label": "A"}],
+                                             "multiSelect": False}]}}
+    rid = decisions.build_req_id(payload)
+    decisions.record_decision(led, rid, "ask", "judge_unavailable", None, 1, payload=payload)
+    row = led.read_merged()[rid]
+    assert "tool_input" not in row, "超限的 tool_input 不该落盘"
+    assert row["input_digest"], "但摘要仍要保留，否则 trace 没得看"
+    assert row.get("tool_input_omitted") == "size_cap"
+
+
+def test_normal_tool_input_still_stored(tmp_path):
+    led = _ledger(tmp_path)
+    payload = {"session_id": "s", "prompt_id": "p", "tool_name": "AskUserQuestion",
+               "tool_input": {"questions": [{"question": "正常大小", "options": [{"label": "A"}],
+                                             "multiSelect": False}]}}
+    rid = decisions.build_req_id(payload)
+    decisions.record_decision(led, rid, "ask", "x", None, 1, payload=payload)
+    assert led.read_merged()[rid]["tool_input"]["questions"][0]["question"] == "正常大小"

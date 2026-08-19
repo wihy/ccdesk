@@ -166,3 +166,50 @@ def test_judge_exception_does_not_escape(monkeypatch):
 
     monkeypatch.setattr(judge, "_call_llm_judge", boom)
     assert judge.decide(_payload(SINGLE), {}).decision == "ask"
+
+
+# ── review 发现的三条（都已独立复现）─────────────────────────────────
+
+def test_cache_key_is_scoped_to_session():
+    """缓存不能跨会话/跨项目复用。
+
+    键若只含 tool_name+参数指纹，A 项目里判官对「删库吗→删」的高置信结论，
+    几小时后会在 B 项目里对同一句话直接 allow、且永不过期 —— 那正是本模块
+    声称要防的「替用户做了个他没做过的决定」。
+    """
+    ti = {"questions": [{"question": "删库吗", "options": [{"label": "删"}],
+                         "multiSelect": False}]}
+    a = judge.cache_key({"session_id": "S1", "prompt_id": "P1",
+                         "tool_name": "AskUserQuestion", "tool_input": ti})
+    b = judge.cache_key({"session_id": "S2", "prompt_id": "P2",
+                         "tool_name": "AskUserQuestion", "tool_input": ti})
+    assert a != b
+
+
+def test_cache_key_stable_within_same_session():
+    """同一会话内同一问题仍要命中缓存，否则缓存就没意义了。"""
+    ti = {"questions": [{"question": "q", "options": [{"label": "A"}], "multiSelect": False}]}
+    p = {"session_id": "S1", "prompt_id": "P1", "tool_name": "AskUserQuestion",
+         "tool_input": ti}
+    assert judge.cache_key(p) == judge.cache_key(dict(p))
+
+
+def test_guardrail_rejects_question_without_text():
+    """question 为空时 build_updated_input 会产出 {"null": answer} ——
+    键是个不存在的问题，等同伪造。必须在护栏层拦掉。"""
+    assert judge.guardrail_check(
+        {"questions": [{"options": [{"label": "A"}], "multiSelect": False}]}) == "no_question_text"
+    assert judge.guardrail_check(
+        {"questions": [{"question": "", "options": [{"label": "A"}],
+                        "multiSelect": False}]}) == "no_question_text"
+
+
+def test_decide_rejects_non_askuserquestion_tool():
+    """闸门当前只挂 AskUserQuestion，但 README 与 gate_install 都写明将来可能放宽 matcher。
+    真放宽了，任何恰好带 questions 列表的工具都会被塞进 AskUserQuestion 形状的
+    updatedInput，等于把它的真实入参换掉。类型检查该在这一层，而不是靠安装配置。"""
+    ti = {"questions": [{"question": "q", "options": [{"label": "A"}], "multiSelect": False}]}
+    v = judge.decide({"session_id": "s", "prompt_id": "p", "tool_name": "Bash",
+                      "tool_input": ti}, {})
+    assert v.decision == "ask"
+    assert v.decided_by == "guardrail:unsupported_tool"

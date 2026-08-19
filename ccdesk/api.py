@@ -161,6 +161,17 @@ def make_server(host: str, port: int, state: AppState) -> ThreadingHTTPServer:
             except Exception:            # noqa: BLE001 — daemon 侧异常绝不能变成会话阻塞
                 logging.exception("judge 异常，降级 ask")
                 verdict = judge.Verdict("ask", "daemon_error")
+
+            # 与闸门的 normalize 用同一条规则，否则账本记的决定与会话实际
+            # 收到的决定会分叉：闸门对 AskUserQuestion 会把「allow 但无
+            # updatedInput」降级成 ask（CC 本就会丢弃这种 allow），daemon
+            # 若照旧记 allow，审计链与现实相反，还会让 empty_allow 对着一次
+            # 从未发生的放行报警。
+            if (verdict.decision == "allow"
+                    and payload.get("tool_name") == judge.SUPPORTED_TOOL
+                    and not verdict.updated_input):
+                verdict = judge.Verdict(
+                    "ask", f"downgraded:no_updated_input({verdict.decided_by})")
             latency_ms = int((time.monotonic() - started) * 1000)
 
             # 落账失败不改变已经出的决定——会话不能为了记账等在那里。

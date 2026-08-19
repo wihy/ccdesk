@@ -84,6 +84,7 @@ class Ledger:
         except OSError:
             return merged
         bad_lines: list[str] = []
+        dropped: set[str] = set()   # 请求行已出窗的 req_id
         for line in raw.splitlines():
             if not line.strip():
                 continue
@@ -92,18 +93,33 @@ class Ledger:
             except ValueError:
                 bad_lines.append(line)
                 continue
-            if since_ts is not None:
-                row_ts = rec.get("ts_request")
-                # 只有带 ts_request 的「请求行」参与过滤。决策行/结局行没有
-                # 时间戳，丢了它们会让已存在的请求看起来永远没有决定。
-                if isinstance(row_ts, str) and row_ts < since_ts:
-                    continue
             rid = rec.get("req_id")
             if not rid:
                 bad_lines.append(line)
                 continue
+            if since_ts is not None:
+                row_ts = rec.get("ts_request")
+                if isinstance(row_ts, str) and row_ts < since_ts:
+                    # 请求行出窗：连同它此前已并入的内容一起丢弃。
+                    dropped.add(rid)
+                    merged.pop(rid, None)
+                    continue
+                # 决策行/结局行没有 ts_request，本身判不了窗口——跟着它们的
+                # 请求行走。请求行被丢了还留着它们，/ledger 会吐出一堆没有
+                # tool_name/session_id 的幽灵记录，面板和 trace 渲染成空行。
+                if rid in dropped:
+                    continue
             slot = merged.setdefault(rid, {})
+            # allow_count 由「账本里有几行 allow」聚合得出，不接受行内绝对值。
+            # 存绝对值就得 read-modify-write，而 daemon 是多线程的：两个并发
+            # /decide 会双双读到 0、双双写 1，last-wins 之后 duplicate_allow
+            # （recon 判「幂等键失效」的唯一依据）就被静默架空了。
+            # append-only 本身是原子的，没有中间状态可竞争。
+            if rec.get("decision") == "allow":
+                slot["allow_count"] = slot.get("allow_count", 0) + 1
             for key, value in rec.items():
+                if key == "allow_count":
+                    continue
                 if value is not None:
                     slot[key] = value
         # bad_line_count is scan-count semantics: how many bad lines this

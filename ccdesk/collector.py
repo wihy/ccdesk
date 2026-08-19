@@ -51,6 +51,7 @@ class Collector:
         if self._known is None:
             self._known = set(self.ledger.read_merged())
         known = self._known
+        refreshed = False        # 本轮是否已因疑似孤儿重建过 known
 
         # 必须按二进制读：offset 是字节偏移，文本模式下 errors="replace" 会让
         # len(line.encode()) 与实际消耗字节数不等，断点续读会逐渐错位。
@@ -72,6 +73,15 @@ class Collector:
                     continue
                 outcome = events.to_outcome_record(event)
                 if outcome is not None:
+                    if outcome["req_id"] not in known and not refreshed:
+                        # 账本有**两个**写入方：collector 自己，和闸门（decisions）。
+                        # 判官放行时 CC 不发 PermissionRequest，所以这个 req_id
+                        # collector 从没在事件流里见过，但闸门早写进账本了。
+                        # 判孤儿之前先付一次全量重建的代价确认——每轮最多一次，
+                        # 只在真出现疑似孤儿时才发生，常态仍是增量。
+                        self._known = set(self.ledger.read_merged())
+                        known = self._known
+                        refreshed = True
                     if outcome["req_id"] in known:
                         self.ledger.append({
                             "req_id": outcome["req_id"],
@@ -82,7 +92,7 @@ class Collector:
                         })
                         stats["outcomes"] += 1
                     else:
-                        # 孤儿结局：req_id 不在已知集合（请求落在轮转备份里、
+                        # 孤儿结局：req_id 确实不在账本里（请求落在轮转备份里、
                         # 或 hook 改写 input_fp 导致两侧对不上）。不归属就
                         # 不瞎归属——不写账本，但必须数出来，不静默丢弃
                         # 「工具确实执行过」的证据。
