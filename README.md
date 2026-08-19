@@ -32,7 +32,7 @@ dangling_request   047429fa21c97a3c  AskUserQuestion «…»  无决策  (78523s
 |---|---|
 | **⌥⌘D** | 弹出面板：会话列表 / 对账异常（可展开看足迹）/ 自身健康 |
 | 菜单栏徽标 | `CC 8`，有人在等时变 `CC ●1`，并弹系统通知 |
-| CLI | `ccdesk sessions` / `recon` / `trace <id>` / `why <id>` |
+| CLI | `ccdesk sessions` / `recon` / `trace <id>` / `why <id>` / `gate` / `replay` |
 
 数据来自两个**官方现成的源**，不做任何侵入式改造：
 
@@ -42,29 +42,46 @@ dangling_request   047429fa21c97a3c  AskUserQuestion «…»  无决策  (78523s
 采集器把两者对齐成一本 append-only 账本，用 `req_id`（会话+提示+工具+参数指纹）做幂等键，
 让「发起 → 决策 → 结局」三段能对上号。对账器再看这三段有没有闭合。
 
+再加一个可选的**闸门**（`PreToolUse` hook，`ccdesk gate install` 装上）：会话弹选择题时先问
+daemon 要个决定，能自动答就答、答不了就原样回落到你熟悉的终端弹窗。它永不 `deny`，
+任何异常都降级成「问你」。默认不装 —— 装不装、什么时候装，是你的选择。
+
 ## 设计上的两个决定
 
-**observe-only：只看，不替你做决定。**
-闸门（`PreToolUse` hook）代码写好了、十条契约测试全绿，但**有意没有安装**到任何 settings.json。
-理由是先攒够真实请求样本再写白名单规则，而不是拍脑袋定策略然后误挡你所有会话。
-代价是 `why` 子命令现在恒输出 `None`，四类对账异常里只有一类可达——这些都在「已知限制」里如实写了。
+**闸门只挂 AskUserQuestion，不挂全量工具。**
+`PreToolUse` hook 理论上能拦每一次工具调用，但本机 `defaultMode=auto` 且
+`permissions.allow` 含 `Bash(*)` —— 实测 events.jsonl 尾部 2000 行里 **PostToolUse 422 条、
+PermissionRequest 0 条**，也就是除 AskUserQuestion 外没有任何工具会走到权限询问。
+挂全量只会给每次工具调用白加一次本机 HTTP 往返，收益为零、爆炸半径却是你所有会话。
+哪天收紧了 `permissions`，把 matcher 放宽即可（`ccdesk/gate_install.py:MATCHER`）。
 
 **闸门永不 deny。**
-真装上之后，它的三条铁律是：永不 `deny`、永不非零退出、永不打印 traceback。
-任何异常路径（daemon 挂了、返回垃圾、响应慢）都自降级为 `ask`，把选择权交回给你。
-自降级线 7.5 秒由内部 watchdog 保证——实测过 Claude Code 侧超时后的兜底行为**不保证拒绝**、
-且因命令形态而异，所以不能指望它。
+三条铁律：永不 `deny`、永不非零退出、永不打印 traceback。任何异常路径（daemon 挂了、
+返回垃圾、响应慢、判官没凭证）都自降级为 `ask`，把选择权交回给你。自降级线 7.5 秒由
+内部 watchdog 保证——实测过 Claude Code 侧超时后的兜底行为**不保证拒绝**、且因命令形态
+而异，所以不能指望它。「不确定就 ask」比「不确定就放行」重要得多：放错一次是替你做了
+个你没做过的决定。
 
-## 两个实测结论（写在 `spikes/`）
+## 三个实测结论（写在 `spikes/`）
 
-做之前先验了两件事，结论都改写了设计：
+设计里每个关键假设都先做了实验，结论都改写了设计：
 
 **U1：外部消息推不动 waiting 会话。** 向一个卡在弹窗上的会话发消息，消息会送达并落进输入框，
-但**弹窗仍在、状态不变、不被消费**——直到你亲手点掉弹窗，它才被处理。所以「自动回复推进」这条路
-对 waiting 会话是死的，只对 idle 会话有效。（仅实测了 `input needed` 分支，`dialog open` 属推断待验证。）
+但**弹窗仍在、状态不变、不被消费**——直到你亲手点掉弹窗，它才被处理。
+两个分支（`input needed` 与真实权限弹窗）现在都有直接实验支撑：2026-08-19 的补验里，
+同一条消息在弹窗期间躺了 50 秒纹丝不动，弹窗一被点掉立刻被消费并回了约定的暗号——
+这就排除了「消息根本没送达」这种平凡解释。所以程序化推进 `waiting` 会话的唯一入口是闸门。
+
+> 顺带纠正一处口径：真实权限弹窗的 `waitingFor` 实测是 **`permission prompt`**，
+> 不是早期文档写的 `dialog open`。ccdesk 只透传这个字段、不按值分支，所以功能不受影响。
 
 **U2：hook timeout 上限 ≥300 秒。** 30/60/120/300 四档全部生效，未见上限。这条决定了闸门
 7.5 秒的自降级线不会被 Claude Code 抢先打断。
+
+**U5：闸门可以替你答选择题。** `PreToolUse` 返回 `allow` + `updatedInput`（内含预填的
+`answers`）后，AskUserQuestion **不弹窗**，会话把注入的答案当作「用户已回答」直接消费。
+`updatedInput` 必须放在 `hookSpecificOutput` **内**（已实测；放错则静默不生效）。
+这条让闸门在这台机器上有了真正的用武之地——毕竟这里唯一会弹窗的工具就是它。
 
 ## 快速上手
 
@@ -100,7 +117,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.ccdesk.daemon.plist
 plist 里的 `PATH` 不能省：launchd 不继承登录 shell 的 PATH，默认只有 `/usr/bin:/bin:/usr/sbin:/sbin`，
 里面没有 `claude`，会话主源会静默降级成文件真源。
 
-### CLI 四命令（只读）
+### CLI 六命令
 
 > 下方各命令的输出块均为**某次真实运行的样例**，数字随当时机器上的会话与账本变化，不是固定值。
 
@@ -132,14 +149,17 @@ req_id  2e4bdb5ed1ed3713
 ③ 由 `PostToolUse`（`executed`）/ `PermissionDenied`（`denied`，附 `outcome_reason`）回填，真正悬空的请求 ③ 也是 `—`。
 
 ```bash
-~/ccdesk/bin/ccdesk why 2e4bdb5ed1ed3713
+~/ccdesk/bin/ccdesk why dd4ac7a03c92118d
 ```
 ```
-决定    None
-决定者  None
+决定    ask
+决定者  judge_unavailable
 置信度  —
-耗时    — ms
+耗时    8 ms
 ```
+P1 时期这里恒输出 `None`（无人写 decision）。P2 起由 daemon 落账，`决定者` 会告诉你
+是哪一层做的决定：`guardrail:multiselect` / `cache` / `judge:haiku` / `judge:low_confidence` /
+`judge_unavailable` / `daemon_error`。上面这条是本机的常态——判官没凭证，落回人工。
 
 ```bash
 ~/ccdesk/bin/ccdesk recon    # 授权闭环对账
@@ -150,10 +170,34 @@ req_id  2e4bdb5ed1ed3713
 dangling_request   047429fa21c97a3c  AskUserQuestion «{"questions":[...]» 无决策  (9245s)
 dangling_request   935c8425155cd84a  AskUserQuestion «{"questions":[...]» 无决策  (536s)
 ```
-对账器实现了四类异常，但 **P1 只有 `dangling_request`（60s 无决策）一类真正可达**——
-另外三类（`empty_allow` / `duplicate_allow` / `silent_stall`）的判据都要求 `decision` 非 None，
-而 P1 observe-only 全树无人写 `decision`，所以它们恒不触发，要等 P2 的 decision writer 上线。
+四类异常（`dangling_request` / `empty_allow` / `duplicate_allow` / `silent_stall`）的判据
+**现在全部可达**：P1 时期后三类都要求 `decision` 非 None，而那时全树无人写 decision，
+所以恒不触发；P2 的 decision writer 上线并维护 `allow_count` 之后这个盲区已解除。
 只看 24h 窗口内的请求，历史悬空不会永久重报。
+
+
+```bash
+~/ccdesk/bin/ccdesk gate status      # install / uninstall / status
+```
+```
+闸门未安装  →  /Users/chunhaixu/.claude/settings.json
+```
+`install` 往 `~/.claude/settings.json` 的 `hooks.PreToolUse` 追加一条 matcher 为
+`AskUserQuestion` 的记录，**幂等**（装两次不会出现两条）、**先备份**
+（`settings.json.ccdesk-bak.<时间戳>`）、**解析不了就拒绝写**（宁可装不上也不能把你的配置搞没）。
+`uninstall` 只删自己那条，绝不动 observe.py 之类别人的 hook。
+已经在跑的会话要重启才会加载新 hook。
+
+```bash
+~/ccdesk/bin/ccdesk replay --since=24h    # 改规则前的安全网
+```
+```
+重放 1 条请求，决定会变的 0 条
+```
+拿历史请求跑一遍**当前**的护栏与判官，看哪些决定会变。`ask → allow` 方向会额外标
+`⚠️ 规则放松`——那才是危险的方向（把过去你亲自把过关的东西自动放掉）。
+只读，不写账本；用空缓存重放，免得历史缓存把结果染成 allow。
+
 
 ### 菜单栏 App
 
@@ -238,27 +282,61 @@ curl -s http://127.0.0.1:8787/health     # 挂了 → 健康条空
 **5. 某条请求永远没有 `outcome`**
 先比对该工具在 `PermissionRequest` 与 `PostToolUse` 两侧的 `tool_input` 键集。CC 会在执行前改写 `tool_input`（已知：`AskUserQuestion` 的结局侧会多出 `answers` / `annotations`），键集不同则两侧指纹不同、`req_id` 对不上。把新发现的差异键补进 `ccdesk/ledger.py` 的 `VOLATILE_INPUT_KEYS`（按工具名，不要无差别丢键）。
 
-## P1 已知限制
+## 已知限制
 
-1. **`why` 输出 `决定 None / 决定者 None` 是预期，不是故障** —— P1 observe-only，没有任何组件写 decision 字段（闸门未安装）。P2 闸门上线后此输出才有实义。
-2. **通知可用性取决于运行形态** —— `.app`（`ccdesk-app install`）下 `Bundle.main.bundleIdentifier` = `com.ccdesk.app`，代码里那两处 bundle 守卫放行，通知授权实测已授予（系统日志 `didGrant: 1 hasError: 0`）；裸可执行（`ccdesk-app start`）没有 app bundle、`bundleIdentifier` 是 nil，守卫直接跳过通知，**仍不可用**。徽标与面板两种形态都正常。「会话转 waiting 时通知真的弹出来」已人工核对通过。
-3. **四类异常里只有 `dangling_request` 可达** —— `empty_allow` / `silent_stall` / `duplicate_allow` 三个分支都要求 `decision` 非 None（`duplicate_allow` 还额外要 `allow_count`），而 P1 全树无人写 `decision`，所以这三类恒不触发、是盲区。P2 的 decision writer 上线并维护 `allow_count` 后才解除。
-4. **闸门未安装（有意）** —— 骨架在 `hooks/ccdesk_gate.py`（连接失败/垃圾输入/超时均自降级为 ask，永不 deny），但不在任何 settings.json 里。先攒真实请求样本，再写白名单。
+1. **判官在本机没有可用通道，所以自动代答实际不会发生** —— 判官只认 `ANTHROPIC_API_KEY`
+   这一条路，而本机没配（也没有 `apiKeyHelper`）。另一条看似可行的 `claude -p --model haiku`
+   实测**单次 42.5s / 42.8s**（两次，含空 settings + 禁 MCP 的最小配置），远超闸门 7.5s 的
+   自降级线，塞不进去。于是每条请求都走 spec §9 的降级路径，`decided_by` 如实写
+   `judge_unavailable`，回落终端原生弹窗——**等于装了闸门但行为与没装一样**。
+   配上 `ANTHROPIC_API_KEY` 后判官自己就活了，代码路径已测（14 条用例）。
+2. **自动代答只覆盖「单问题 + 单选 + 合法 label」** —— 这是 U5 唯一实测过的形态。
+   多问题 / `multiSelect:true` / 无 options / 判官答了个选项外的字符串，一律降级 `ask`。
+   这是有意为之：注入一个不存在的选项等于**伪造用户意图**，比不自动化糟得多。
+3. **child session 是采集盲区** —— 带 `CLAUDE_CODE_CHILD_SESSION=1` 的会话不产生
+   events.jsonl 事件（实测：本机 10 个会话中 8 个正常采集，该类会话在当前档中 0 条）。
+   闸门对这类会话是否生效**未验证**。
+4. **通知可用性取决于运行形态** —— `.app`（`ccdesk-app install`）下
+   `Bundle.main.bundleIdentifier` = `com.ccdesk.app`，代码里那两处 bundle 守卫放行，通知授权
+   实测已授予（系统日志 `didGrant: 1 hasError: 0`）；裸可执行（`ccdesk-app start`）没有
+   app bundle、`bundleIdentifier` 是 nil，守卫直接跳过通知，**仍不可用**。徽标与面板两种形态
+   都正常。「会话转 waiting 时通知真的弹出来」已人工核对通过。
+5. **`replay` 只能重放 P2 之后的请求** —— 重放需要完整 `tool_input`，而 collector 那侧
+   只存 `input_digest` 摘要（体积/隐私考虑）。P2 起由闸门在落账时补上这份原始输入，所以
+   P1 时期的老记录重放不了，会被跳过而不是编造。
 
-## P2 展望
+## P2 已交付
 
-- 闸门安装 + 三态决策（allow/ask/deny）—— 骨架已实现，**待安装**；updatedInput 代答路径**待验证**
-- decision writer + `allow_count` 写入契约 —— **P2 必做**（否则限制 1/3 无法解除）
-- ledger 超 50MB 时加过滤路由 —— **P2**
-- collector known 集合增量维护（账本 >5 万行）—— **P2**
-- `dialog open` 分支复现（U1，peer advance 现象）—— **待复现**，spike 记录在 `spikes/u1-peer-advance.md`
+| 项 | 状态 |
+|---|---|
+| 闸门安装通道（`ccdesk gate install/uninstall/status`） | ✅ 幂等 + 自动备份 + 只删自己 |
+| `updatedInput` 代答 | ✅ 沙盒实测坐实（会话从未弹窗，见下） |
+| 四层决策 + U5 四道护栏 | ✅ `guardrail → cache → judge → 降级`，永不 deny |
+| decision writer + `allow_count` | ✅ `why` 不再恒 None，四类对账判据全部可达 |
+| `ccdesk replay` | ✅ 改规则前先看会把哪些 `ask` 变成 `allow` |
+| ledger 大账本窗口读 / collector known 增量 | ✅ 阈值内行为与此前逐字节一致 |
+| U1 权限弹窗分支复现 | ✅ 见 `spikes/u1-peer-advance.md` 补验节 |
+
+**代答机制的实测证据**（`spikes/u5-updated-input-auto-answer.md`）：闸门返回
+`allow` + `updatedInput`（`updatedInput` 必须放在 `hookSpecificOutput` **内**）后，
+会话弹窗特征命中 **0 次**、直接输出 `User answered Claude's questions: · … → 选项A`，
+全程无人触碰键盘。反之，`allow` 若**不带** `updatedInput`，CC 会直接丢弃这个 allow
+（`if(!updatedInput && requiresUserInteraction()) return null`），工具就悬在那里——
+所以闸门对 AskUserQuestion 遇到这种组合会自己降级成 `ask`，行为可预期。
+
+## P3 展望
+
+- 托管会话（csd / tmux 拉起）+ `idle` 会话的回复推进 —— `waiting` 会话已坐实推不动，
+  但 `idle` 会话的 peer 推进可用
+- 任务进展对账（停摆 / 跑偏 / 虚报完成三类）—— 需要先有 `tasks.json`
+- 资源额度对账、与飞书项目的外部真源对账
 
 ## 测试
 
 ```bash
-/opt/homebrew/Caskroom/miniconda/base/bin/python3 -m pytest -v   # 87 passed
-cd app/CCDesk && swift test                                       # 21 passed
-sh app/CCDesk/Tests/CCDeskTests/bundle_structure_test.sh          # 打包产物结构，8 条断言
+/opt/homebrew/Caskroom/miniconda/base/bin/python3 -m pytest -q    # 161 passed
+cd app/CCDesk && swift test                                        # 21 passed
+sh app/CCDesk/Tests/CCDeskTests/bundle_structure_test.sh           # 打包产物结构，8 条断言
 ```
 
 打包产物那条是 shell 测（真跑一次 `build-app.sh` 装到临时目录再断言），没进 `swift test`：
