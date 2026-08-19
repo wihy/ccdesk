@@ -140,3 +140,25 @@ def test_recon_window_filters_old_records(tmp_path, monkeypatch):
         srv.shutdown()
     assert [a["req_id"] for a in body["anomalies"]] == ["r_new"]
     assert body["checked"] == 1
+
+
+def test_client_disconnect_does_not_write_traceback(server, capfd):
+    """客户端读一半就断开，服务端不得把 traceback 打到 stderr。
+
+    App 面板每 3s 并发拉三个接口，用户关面板/切屏时连接会被中途掐断。
+    ThreadingHTTPServer 默认把 BrokenPipe 当未捕获异常打印，实测累积了
+    459 次 traceback / 834KB，日志无轮转会一直涨。
+    """
+    import socket
+    from urllib.parse import urlparse
+
+    parsed = urlparse(server)
+    capfd.readouterr()                       # 清掉此前噪音，只看本次
+    for _ in range(5):                       # 单次可能不触发写，多打几发
+        conn = socket.create_connection((parsed.hostname, parsed.port), timeout=5)
+        conn.sendall(b"GET /sessions HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        conn.close()
+    time.sleep(0.5)
+    err = capfd.readouterr().err
+    assert "BrokenPipeError" not in err
+    assert "Traceback" not in err

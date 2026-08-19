@@ -63,6 +63,18 @@ def _within_window(records: dict, now: datetime) -> dict:
 
 def make_server(host: str, port: int, state: AppState) -> ThreadingHTTPServer:
     class Handler(BaseHTTPRequestHandler):
+        def handle_one_request(self) -> None:
+            """客户端提前断开不是服务端故障，别往 stderr 打 traceback。
+
+            App 面板每 3s 并发拉三个接口，用户关面板/切屏时连接会被中途掐断。
+            不吞的话 ThreadingHTTPServer 会把它当未捕获异常打印——实测累积
+            459 次 / 834KB，而 stderr.log 没有轮转。
+            """
+            try:
+                super().handle_one_request()
+            except (BrokenPipeError, ConnectionResetError):
+                self.close_connection = True
+
         def _send(self, body: dict, status: int = 200) -> None:
             payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
             self.send_response(status)
