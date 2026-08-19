@@ -196,7 +196,10 @@ dangling_request   935c8425155cd84a  AskUserQuestion «{"questions":[...]» 无�
 `AskUserQuestion` 的记录，**幂等**（装两次不会出现两条）、**先备份**
 （`settings.json.ccdesk-bak.<时间戳>`）、**解析不了就拒绝写**（宁可装不上也不能把你的配置搞没）。
 `uninstall` 只删自己那条，绝不动 observe.py 之类别人的 hook。
-已经在跑的会话要重启才会加载新 hook。
+**已经在跑的会话也会生效，不用重启** —— hook 是每次工具调用时读配置的，不是会话启动时
+缓存的。实测证据：本机一个 8/17 14:06 起的会话，在 8/19 15:10 装上闸门后，16:03 的
+AskUserQuestion 命中了闸门并被正确降级（账本里那条 `guardrail:multi_question`）。
+（这里此前写的是「要重启才会加载」，是没验证就写下的，已按实测改正。）
 
 ```bash
 ~/ccdesk/bin/ccdesk replay --since=24h    # 改规则前的安全网

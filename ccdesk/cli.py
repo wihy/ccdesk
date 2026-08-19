@@ -96,7 +96,7 @@ def _cmd_gate(action: str) -> int:
 
     messages = {
         "installed": f"闸门已安装  matcher={gate_install.MATCHER}  →  {gate_install.SETTINGS_PATH}\n"
-                     "提示：已在跑的会话要重启才会加载新 hook；"
+                     "已在跑的会话也会生效，不用重启（hook 是每次工具调用时读的）；"
                      "原文件已备份为 settings.json.ccdesk-bak.<时间戳>",
         "already": "闸门早已安装，未做改动",
         "removed": f"闸门已卸载  →  {gate_install.SETTINGS_PATH}（已备份）",
