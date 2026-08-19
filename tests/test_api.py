@@ -275,3 +275,33 @@ def test_ledger_never_claims_allow_without_updated_input(server):
         assert "allow_count" not in row, "allow_count 不得为一次没发生的放行递增"
     finally:
         api_mod.judge.decide = orig
+
+
+def test_focus_route_reports_unmapped_session(server, monkeypatch):
+    """会话不在 cmux 里时，路由要如实说不行，让 App 回退到打开目录。"""
+    from ccdesk import focus as focus_mod
+    monkeypatch.setattr(focus_mod, "resolve", lambda pid: None)
+    body = post(server, "/focus", {"pid": 4242})
+    assert body["ok"] is False
+    assert body["reason"] == "not_in_cmux"
+
+
+def test_focus_route_switches_workspace(server, monkeypatch):
+    from ccdesk import focus as focus_mod
+    calls = []
+    monkeypatch.setattr(focus_mod, "resolve",
+                        lambda pid: {"workspace_ref": "workspace:8", "surface_ref": "surface:11",
+                                     "workspace_title": "总管监控", "tty": "ttys013"})
+    monkeypatch.setattr(focus_mod, "_run_cmux",
+                        lambda *a: calls.append(a) or (0, "OK workspace:8"))
+    body = post(server, "/focus", {"pid": 4242})
+    assert body["ok"] is True
+    assert body["workspace_title"] == "总管监控"
+    assert calls == [("select-workspace", "--workspace", "workspace:8")]
+
+
+def test_focus_route_rejects_bad_pid(server):
+    for bad in ({}, {"pid": "abc"}, {"pid": None}):
+        body = post(server, "/focus", bad)
+        assert body["ok"] is False
+        assert body["reason"] == "bad_pid"

@@ -17,6 +17,14 @@ def _get(path: str) -> dict:
         return json.loads(response.read().decode("utf-8"))
 
 
+def _post(path: str, payload: dict) -> dict:
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(BASE + path, data=data,
+                                     headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(request, timeout=15) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
 def _find(req_id: str) -> dict | None:
     for record in _get("/ledger")["records"]:
         if record.get("req_id") == req_id:
@@ -106,6 +114,39 @@ def _cmd_gate(action: str) -> int:
     return 0
 
 
+def _cmd_focus(target: str) -> int:
+    """把 cmux 切到某个会话所在的 workspace。target 可以是 pid 或会话名。"""
+    sessions = _get("/sessions")["sessions"]
+    if target.isdigit():
+        matched = [s for s in sessions if str(s.get("pid")) == target]
+    else:
+        matched = [s for s in sessions if target.lower() in str(s.get("name", "")).lower()]
+    if not matched:
+        print(f"找不到会话：{target}（用 ccdesk sessions 看当前列表）", file=sys.stderr)
+        return 1
+    if len(matched) > 1:
+        print(f"「{target}」匹配到 {len(matched)} 个会话，说得更具体些：", file=sys.stderr)
+        for s in matched:
+            print(f"  {s['name']}  pid={s['pid']}", file=sys.stderr)
+        return 1
+
+    session = matched[0]
+    body = _post("/focus", {"pid": session["pid"]})
+    if body.get("ok"):
+        print(f"已切到 cmux 的「{body.get('workspace_title')}」"
+              f"（{body.get('workspace_ref')}）  ← {session['name']}")
+        print("提示：cmux 窗口不会自动置前，这一步由菜单栏 App 做；CLI 下自己切过去看")
+        return 0
+    reason = body.get("reason", "unknown")
+    hint = {"not_in_cmux": "该会话不在 cmux 里（或 cmux 没跑）",
+            "cmux_failed": f"cmux 命令失败：{body.get('error', '')}",
+            "bad_pid": "pid 不合法",
+            "focus_error": "daemon 内部错误，看 logs/daemon.log"}.get(reason, reason)
+    print(f"没切成：{hint}", file=sys.stderr)
+    print(f"会话目录：{session.get('cwd', '')}", file=sys.stderr)
+    return 1
+
+
 def _cmd_replay(since: str) -> int:
     from ccdesk import replay as replay_mod
 
@@ -135,6 +176,8 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("req_id")
     gate = sub.add_parser("gate")
     gate.add_argument("action", choices=("install", "uninstall", "status"))
+    fc = sub.add_parser("focus")
+    fc.add_argument("target", help="会话名（可模糊）或 pid")
     rp = sub.add_parser("replay")
     rp.add_argument("--since", default="24h", help="时间窗，如 30m / 24h / 7d")
     args = parser.parse_args(argv)
@@ -150,6 +193,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_why(args.req_id)
         if args.cmd == "gate":
             return _cmd_gate(args.action)
+        if args.cmd == "focus":
+            return _cmd_focus(args.target)
         if args.cmd == "replay":
             return _cmd_replay(args.since)
     except ValueError as exc:

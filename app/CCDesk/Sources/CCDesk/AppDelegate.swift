@@ -6,6 +6,12 @@ import UserNotifications
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private let client = DeskClient()
+
+    /// cmux 的 bundle id 与安装路径。实测取自
+    /// `/Applications/cmux.app/Contents/Info.plist` 的 CFBundleIdentifier，
+    /// 并与运行中进程的 bundle id 核对过。
+    private static let cmuxBundleID = "com.cmuxterm.app"
+    private static let cmuxAppPath = "/Applications/cmux.app"
     private let model = PanelModel()
     private var popover: NSPopover!
     private var timer: Timer?
@@ -30,7 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.delegate = self
         popover.contentViewController = NSHostingController(
             rootView: PanelView(model: model,
-                                onOpenCwd: { [weak self] in self?.openCwd($0) },
+                                onOpenCwd: { [weak self] in self?.openSession($0) },
                                 onQuit: { NSApp.terminate(nil) }))
 
         // ⌥⌘D：不依赖徽标可见性的入口。菜单栏排满时 macOS 会静默隐藏排后面的第三方
@@ -124,8 +130,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.health = try? await healthTask
     }
 
-    private func openCwd(_ session: Session) {
-        NSWorkspace.shared.open(URL(fileURLWithPath: session.cwd))
+    /// 点击会话行：优先把 cmux 切到它所在的 workspace 并置前；
+    /// 映射不上（会话不在 cmux 里 / cmux 没跑 / 命令失败）才回退到打开 cwd。
+    private func openSession(_ session: Session) {
+        Task { @MainActor in
+            var switched = false
+            if let result = try? await client.focus(pid: session.pid), result.ok {
+                switched = true
+            }
+            if switched {
+                // daemon 只切 workspace，不会 activate —— 实测 select-workspace
+                // 执行前后前台应用不变。置前这一步必须在 GUI 侧补。
+                activateCmux()
+            } else {
+                NSWorkspace.shared.open(URL(fileURLWithPath: session.cwd))
+            }
+        }
+    }
+
+    /// 把 cmux 窗口带到前台。找不到就静默放弃——此时 workspace 已经切好了，
+    /// 用户自己切过去也能看到正确的那个。
+    private func activateCmux() {
+        if let app = NSRunningApplication
+            .runningApplications(withBundleIdentifier: Self.cmuxBundleID).first {
+            app.activate(options: [.activateAllWindows])
+            return
+        }
+        let url = URL(fileURLWithPath: Self.cmuxAppPath)
+        if FileManager.default.fileExists(atPath: url.path) {
+            NSWorkspace.shared.openApplication(at: url,
+                                               configuration: NSWorkspace.OpenConfiguration())
+        }
     }
 
     private func notify(_ session: Session) {

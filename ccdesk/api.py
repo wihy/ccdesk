@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
 
-from ccdesk import config, decisions, judge, sources
+from ccdesk import config, decisions, focus, judge, sources
 from ccdesk.collector import Collector
 from ccdesk.ledger import Ledger
 from ccdesk.recon_auth import reconcile
@@ -144,7 +144,11 @@ def make_server(host: str, port: int, state: AppState) -> ThreadingHTTPServer:
         def do_POST(self) -> None:
             length = int(self.headers.get("Content-Length", 0))
             raw = self.rfile.read(length)
-            if self.path.split("?", 1)[0] != "/decide":
+            route = self.path.split("?", 1)[0]
+            if route == "/focus":
+                self._handle_focus(raw)
+                return
+            if route != "/decide":
                 self._send({"error": "not found"}, status=404)
                 return
 
@@ -189,6 +193,29 @@ def make_server(host: str, port: int, state: AppState) -> ThreadingHTTPServer:
             if verdict.updated_input is not None:
                 body["updatedInput"] = verdict.updated_input
             self._send(body)
+
+        def _handle_focus(self, raw: bytes) -> None:
+            """把 cmux 切到该会话所在的 workspace。
+
+            只负责切换，**不负责把 cmux 窗口带到前台** —— 实测 select-workspace
+            不会 activate，那一步由 CCDesk.app 侧做。失败一律 ok=false + 原因，
+            让 App 回退到打开 cwd。
+            """
+            try:
+                payload = json.loads(raw.decode("utf-8") or "{}")
+            except (ValueError, UnicodeDecodeError):
+                payload = {}
+            pid = payload.get("pid") if isinstance(payload, dict) else None
+            if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+                self._send({"ok": False, "reason": "bad_pid"})
+                return
+            try:
+                ok, detail = focus.focus_session(pid)
+            except Exception:            # noqa: BLE001 — 跳转失败绝不能打穿面板
+                logging.exception("focus 失败")
+                self._send({"ok": False, "reason": "focus_error"})
+                return
+            self._send({"ok": ok, **detail})
 
         def log_message(self, *args) -> None:
             pass

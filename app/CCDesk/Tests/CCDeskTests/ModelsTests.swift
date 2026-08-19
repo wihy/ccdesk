@@ -188,3 +188,32 @@ final class ModelsTests: XCTestCase {
         Anomaly(kind: kind, reqId: "r", sessionId: "s", detail: "d", ageS: ageS)
     }
 }
+
+// MARK: - /focus 返回解析
+
+final class FocusResultTests: XCTestCase {
+    func testDecodesSuccess() throws {
+        let json = """
+        {"ok":true,"workspace_ref":"workspace:8","workspace_title":"总管监控",
+         "surface_ref":"surface:11","tty":"ttys013"}
+        """.data(using: .utf8)!
+        let r = try JSONDecoder().decode(FocusResult.self, from: json)
+        XCTAssertTrue(r.ok)
+        XCTAssertEqual(r.workspaceTitle, "总管监控")
+    }
+
+    func testDecodesFailureWithReason() throws {
+        let json = #"{"ok":false,"reason":"not_in_cmux","detail":"…"}"#.data(using: .utf8)!
+        let r = try JSONDecoder().decode(FocusResult.self, from: json)
+        XCTAssertFalse(r.ok)
+        XCTAssertEqual(r.reason, "not_in_cmux")
+        // 失败时没有 workspace_title —— 解析不能因此抛错，否则回退路径也走不到
+        XCTAssertNil(r.workspaceTitle)
+    }
+
+    func testDecodesMinimalPayload() throws {
+        let r = try JSONDecoder().decode(FocusResult.self, from: #"{"ok":false}"#.data(using: .utf8)!)
+        XCTAssertFalse(r.ok)
+        XCTAssertNil(r.reason)
+    }
+}

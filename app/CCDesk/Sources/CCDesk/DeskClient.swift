@@ -27,3 +27,34 @@ struct DeskClient {
         return try JSONDecoder().decode(T.self, from: data)
     }
 }
+
+/// `/focus` 的返回。ok=false 时调用方回退到打开 cwd。
+struct FocusResult: Decodable {
+    let ok: Bool
+    let reason: String?
+    let workspaceTitle: String?
+
+    enum CodingKeys: String, CodingKey {
+        case ok, reason
+        case workspaceTitle = "workspace_title"
+    }
+}
+
+extension DeskClient {
+    /// 请求 daemon 把 cmux 切到该会话所在的 workspace。
+    ///
+    /// daemon **只切 workspace，不会把 cmux 窗口带到前台**（实测
+    /// `select-workspace` 不 activate），置前由调用方自己做。
+    func focus(pid: Int) async throws -> FocusResult {
+        var request = URLRequest(url: base.appendingPathComponent("/focus"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 8       // 内含一次 cmux tree + 一次 select
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["pid": pid])
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw DeskError.unreachable
+        }
+        return try JSONDecoder().decode(FocusResult.self, from: data)
+    }
+}

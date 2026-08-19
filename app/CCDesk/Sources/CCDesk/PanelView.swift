@@ -73,7 +73,7 @@ struct PanelView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("在 Finder 打开 \(session.cwd)")
+        .help("跳到 cmux 里这个会话；不在 cmux 里则在 Finder 打开 \(session.cwd)")
     }
 
     // MARK: - 二区：对账异常
