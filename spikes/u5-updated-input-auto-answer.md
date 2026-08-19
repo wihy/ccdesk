@@ -92,3 +92,45 @@ async validateInput({questions:e}){
 3. `annotations` 字段作用未探究（真实样本里恒为空）
 4. 只在 CC **2.1.228** 上测过；`runHooks` 那行是内部实现，**版本升级可能变**，P2 应加一条
    启动自检（构造一次代答，验证机制仍生效），失效时自动降级为「只通知」
+
+---
+
+## 补验（2026-08-19，P2 Task 4）：`updatedInput` 的确切放置位置
+
+上文只坐实了「机制成立」，没记**输出 JSON 里 `updatedInput` 该放哪**——放错就静默不生效。
+本次在 `/tmp/ccdesk-t4` 沙盒复现，坐实 **A 版成立**：放在 `hookSpecificOutput` **内**。
+
+探针实际输出（原文）：
+
+```json
+{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow",
+ "permissionDecisionReason": "probe-A",
+ "updatedInput": {"questions": [...原样...],
+                  "answers": {"这次实验应该选A还是B": "选项A"}}}}
+```
+
+观测结果：
+
+| 观测点 | 结果 |
+|---|---|
+| hook 被调用 | ✅ 收到完整 tool_input |
+| 弹窗特征（`Enter to select` / `to navigate` / `↑/↓`） | **命中 0** → 从未弹窗 |
+| 会话侧输出 | `User answered Claude's questions: · 这次实验应该选A还是B → 选项A` |
+| 会话回执 | `PICKED#选项A#`（探针注入的是第一个选项） |
+
+全程无人触碰键盘。B 版（`updatedInput` 放 JSON 顶层）无需再测——A 版已成立。
+
+### 顺带坐实的一条边界（改了 P2 实现）
+
+`requiresUserInteraction()` 只对 AskUserQuestion 这类工具为 true。**普通工具（Bash 等）
+的 allow 不带 `updatedInput` 是完全正常有效的**，不能无条件把「allow 无 updatedInput」
+降级成 ask —— 那会破坏普通工具的放行。闸门里因此用 `_NEEDS_UPDATED_INPUT` 白名单
+按工具名区分，只对需要交互的工具强制要求代答内容。
+
+### 复现该实验的两个坑（都踩过）
+
+1. **PTY 起会话时，第一个弹出来的是「信任此文件夹」确认**，直接投喂 prompt 会被它
+   当成确认吃掉，会话拿不到任何指令。必须写状态机：先过信任门 → 等主界面就绪 → 再投喂。
+2. **回执标记别用会在 prompt 里原样出现的字符串**。第一版用 `PROBE-PICKED=`，结果
+   投喂的 prompt 文本自身就命中了检测，1.2 秒即误判成功退出。改成 `PICKED#<label>#`
+   这种「只有会话真回答了才会出现」的形态。

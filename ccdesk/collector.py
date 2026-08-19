@@ -15,6 +15,10 @@ class Collector:
         self.ledger = ledger
         self.state_path = Path(state_path)
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        # 已知 req_id 集合。None = 尚未建立，下轮全量重建。
+        # 每轮全量 read_merged 在账本上万行后就是每 3s 一次全文件扫描，
+        # 所以首轮之后靠本轮新增的 req_id 增量维护。
+        self._known: set[str] | None = None
 
     def _load_state(self) -> dict:
         try:
@@ -38,10 +42,15 @@ class Collector:
         offset = state.get("offset", 0)
         if state.get("inode") != stat.st_ino or offset > stat.st_size:
             offset = 0
+            # 轮转/回绕意味着要从头重读，此时 known 也必须重建：
+            # 拿着半截集合往下跑会把正常请求误判成孤儿结局。
+            self._known = None
 
         # 已知的 req_id 集合。请求侧与结局侧现在算出的是**同一个 req_id**
         # （events.to_outcome_record 直接返回 req_id），所以不需要 match_key 索引。
-        known: set[str] = set(self.ledger.read_merged())
+        if self._known is None:
+            self._known = set(self.ledger.read_merged())
+        known = self._known
 
         # 必须按二进制读：offset 是字节偏移，文本模式下 errors="replace" 会让
         # len(line.encode()) 与实际消耗字节数不等，断点续读会逐渐错位。

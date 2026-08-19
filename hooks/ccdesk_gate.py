@@ -15,6 +15,12 @@ import urllib.request
 ENDPOINT = os.environ.get("CCDESK_ENDPOINT", "http://127.0.0.1:8787/decide")
 _ALLOWED = ("allow", "ask")          # 注意：deny 不在其中，闸门永不 deny
 
+# CC 内部对这些工具走 requiresUserInteraction() 分支：
+#   if (!updatedInput && requiresUserInteraction()) return null
+# 即**不带 updatedInput 的 allow 会被直接丢弃**，工具就悬在那里不动。
+# U5 spike 坐实（2026-08-19, CC 2.1.228）。目前已知只有 AskUserQuestion。
+_NEEDS_UPDATED_INPUT = frozenset({"AskUserQuestion"})
+
 
 def _env_deadline() -> float:
     """解析 CCDESK_GATE_DEADLINE；配错（非数字/NaN/inf/非正数）一律回落 7.5。
@@ -33,16 +39,45 @@ def _env_deadline() -> float:
 DEADLINE_S = _env_deadline()
 
 
-def emit(decision: str, reason: str) -> None:
-    sys.stdout.write(json.dumps({"hookSpecificOutput": {
+def emit(decision: str, reason: str, updated_input: dict | None = None) -> None:
+    """输出 hook 决定。
+
+    updatedInput 的位置由沙盒实测坐实（2026-08-19, CC 2.1.228）：放在
+    hookSpecificOutput **内**生效 —— 实测会话从未弹窗、直接输出
+    `User answered ... → 选项A`，全程无人碰键盘。
+    """
+    output = {
         "hookEventName": "PreToolUse",
         "permissionDecision": decision,
         "permissionDecisionReason": reason,
-    }}, ensure_ascii=False) + "\n")
+    }
+    if updated_input is not None:
+        output["updatedInput"] = updated_input
+    sys.stdout.write(json.dumps({"hookSpecificOutput": output},
+                                ensure_ascii=False) + "\n")
     sys.stdout.flush()
 
 
-def _request(payload: dict) -> tuple[str, str]:
+def normalize(decision: str, reason: str, updated_input, tool_name: str):
+    """把「决定 + 代答」收敛成 CC 真正能消费的组合。
+
+    两条规则：
+    * ask 不带 updatedInput —— 带了会让 CC 误以为有代答。
+    * 需要用户交互的工具（AskUserQuestion），allow 必须带 updatedInput，
+      否则 CC 会丢弃这个 allow、工具悬着不动。与其把决定交给 CC 丢弃，
+      不如自己降级成 ask：行为可预期，且仍不违反「永不 deny」。
+      普通工具不受此限 —— 它们的 allow 本来就不需要 updatedInput。
+    """
+    if not isinstance(updated_input, dict) or not updated_input:
+        updated_input = None
+    if decision != "allow":
+        return decision, reason, None
+    if tool_name in _NEEDS_UPDATED_INPUT and updated_input is None:
+        return "ask", f"ccdesk: allow 缺 updatedInput，降级 ask（原因 {reason}）", None
+    return decision, reason, updated_input
+
+
+def _request(payload: dict) -> tuple[str, str, dict | None]:
     """单次 HTTP 问询。urlopen 的 timeout 只约束单次 socket 操作，仅作第一道防线。"""
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
@@ -51,9 +86,12 @@ def _request(payload: dict) -> tuple[str, str]:
         body = json.loads(response.read().decode("utf-8"))
     decision = body.get("permissionDecision")
     reason = str(body.get("reason") or "ccdesk")
+    updated_input = body.get("updatedInput")
+    if not isinstance(updated_input, dict):
+        updated_input = None            # 垃圾就当没给，不许塞给 CC
     if decision in _ALLOWED:
-        return decision, reason
-    return "ask", f"ccdesk: 不接受的决定 {decision!r}，降级 ask"
+        return decision, reason, updated_input
+    return "ask", f"ccdesk: 不接受的决定 {decision!r}，降级 ask", None
 
 
 def ask_daemon(payload: dict) -> tuple[str, str]:
@@ -68,7 +106,7 @@ def ask_daemon(payload: dict) -> tuple[str, str]:
         try:
             result["outcome"] = _request(payload)
         except BaseException as exc:                # noqa: BLE001 — 线程内兜住一切
-            result["outcome"] = ("ask", f"ccdesk: 降级 ({type(exc).__name__})")
+            result["outcome"] = ("ask", f"ccdesk: 降级 ({type(exc).__name__})", None)
         finally:
             result["done"] = True
 
@@ -78,7 +116,7 @@ def ask_daemon(payload: dict) -> tuple[str, str]:
     if result["done"]:
         return result["outcome"]
     # join 超时：结果容器不再读（进程马上退出、daemon 线程随进程被杀，无竞态消费）
-    return "ask", f"ccdesk: daemon {DEADLINE_S}s 内未给决定，降级 ask"
+    return "ask", f"ccdesk: daemon {DEADLINE_S}s 内未给决定，降级 ask", None
 
 
 def main() -> None:
@@ -91,11 +129,12 @@ def main() -> None:
         emit("ask", "ccdesk: hook 输入不是对象")
         return
     try:
-        decision, reason = ask_daemon(payload)
+        decision, reason, updated_input = ask_daemon(payload)
     except Exception as exc:                       # noqa: BLE001 — 兜住一切
         emit("ask", f"ccdesk: 降级 ({type(exc).__name__})")
         return
-    emit(decision, reason)
+    emit(*normalize(decision, reason, updated_input,
+                    str(payload.get("tool_name") or "")))
 
 
 if __name__ == "__main__":

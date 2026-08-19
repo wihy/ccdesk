@@ -160,3 +160,38 @@ def test_restart_with_fresh_ledger_instance_does_not_duplicate_bad_line(tmp_path
     led2 = Ledger(path, bad)
     led2.read_merged()
     assert len(bad.read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_read_merged_without_filter_is_unchanged(tmp_path):
+    """小数据量下必须与今天完全一致 —— 不许因为加了过滤参数就改行为。"""
+    led = Ledger(tmp_path / "l.jsonl", tmp_path / "b.jsonl")
+    led.append({"req_id": "r1", "ts_request": "2026-08-01T00:00:00+00:00"})
+    led.append({"req_id": "r2", "ts_request": "2026-08-19T00:00:00+00:00"})
+    assert set(led.read_merged()) == {"r1", "r2"}
+
+
+def test_read_merged_since_filters_old_rows(tmp_path):
+    led = Ledger(tmp_path / "l.jsonl", tmp_path / "b.jsonl")
+    led.append({"req_id": "old", "ts_request": "2026-08-01T00:00:00+00:00"})
+    led.append({"req_id": "new", "ts_request": "2026-08-19T00:00:00+00:00"})
+    assert set(led.read_merged(since_ts="2026-08-10T00:00:00+00:00")) == {"new"}
+
+
+def test_read_merged_since_keeps_rows_without_ts(tmp_path):
+    """决策行/结局行本身不带 ts_request —— 过滤掉它们会让请求看起来没有决定。"""
+    led = Ledger(tmp_path / "l.jsonl", tmp_path / "b.jsonl")
+    led.append({"req_id": "r1", "ts_request": "2026-08-19T00:00:00+00:00"})
+    led.append({"req_id": "r1", "decision": "allow"})
+    merged = led.read_merged(since_ts="2026-08-10T00:00:00+00:00")
+    assert merged["r1"]["decision"] == "allow"
+
+
+def test_read_merged_since_still_counts_bad_lines(tmp_path):
+    """过滤不能把坏行统计也一起过滤掉 —— 那会让 recon 的坏行数失真。"""
+    path = tmp_path / "l.jsonl"
+    led = Ledger(path, tmp_path / "b.jsonl")
+    led.append({"req_id": "r1", "ts_request": "2026-08-19T00:00:00+00:00"})
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write("{not json\n")
+    led.read_merged(since_ts="2026-08-10T00:00:00+00:00")
+    assert led.bad_line_count == 1

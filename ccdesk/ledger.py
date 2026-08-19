@@ -70,7 +70,13 @@ class Ledger:
             finally:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
-    def read_merged(self) -> dict[str, dict]:
+    def read_merged(self, since_ts: str | None = None) -> dict[str, dict]:
+        """合并读账本。
+
+        since_ts 给的是**大账本时的减负开关**，缺省 None 时行为与不带它时
+        逐字节一致 —— 当前账本才 9.8KB，这条路径平时根本不会走。坏行统计
+        不受过滤影响，否则 recon 报的「坏行 N」会失真。
+        """
         merged: dict[str, dict] = {}
         self.bad_line_count = 0
         try:
@@ -86,6 +92,12 @@ class Ledger:
             except ValueError:
                 bad_lines.append(line)
                 continue
+            if since_ts is not None:
+                row_ts = rec.get("ts_request")
+                # 只有带 ts_request 的「请求行」参与过滤。决策行/结局行没有
+                # 时间戳，丢了它们会让已存在的请求看起来永远没有决定。
+                if isinstance(row_ts, str) and row_ts < since_ts:
+                    continue
             rid = rec.get("req_id")
             if not rid:
                 bad_lines.append(line)

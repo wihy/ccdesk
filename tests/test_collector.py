@@ -103,3 +103,57 @@ def test_missing_events_file_is_not_fatal(tmp_path):
     led = Ledger(tmp_path / "l.jsonl", tmp_path / "bad.jsonl")
     stats = Collector(tmp_path / "nope.jsonl", led, tmp_path / "state.json").run_once()
     assert stats == {"requests": 0, "outcomes": 0, "skipped": 0, "orphans": 0}
+
+
+def _mk(tmp_path):
+    from ccdesk.collector import Collector
+    from ccdesk.ledger import Ledger
+    led = Ledger(tmp_path / "l.jsonl", tmp_path / "b.jsonl")
+    return Collector(tmp_path / "events.jsonl", led, tmp_path / "state.json")
+
+
+def test_known_set_is_reused_across_runs(tmp_path, monkeypatch):
+    """第二轮不得再全量 read_merged 重建 known —— 账本大了那是每 3s 一次的全文件扫描。"""
+    col = _mk(tmp_path)
+    _write(tmp_path / "events.jsonl", [])
+    col.run_once()
+
+    calls = []
+    original = col.ledger.read_merged
+    monkeypatch.setattr(col.ledger, "read_merged",
+                        lambda *a, **k: (calls.append(1), original(*a, **k))[1])
+    col.run_once()
+    assert calls == []
+
+
+def test_known_set_rebuilds_after_reset(tmp_path):
+    """状态被重置时必须重建，不能带着残缺的 known 继续跑（会把请求误判成孤儿）。"""
+    col = _mk(tmp_path)
+    _write(tmp_path / "events.jsonl", [])
+    col.run_once()
+    col._known = None
+    col.run_once()
+    assert col._known is not None
+
+
+def test_incremental_known_still_backfills_outcome(tmp_path):
+    """增量维护后，跨轮次的 request→outcome 回填必须仍然成立。"""
+    import json as _json
+    events_path = tmp_path / "events.jsonl"
+    col = _mk(tmp_path)
+
+    req = {"summary": {"event": "PermissionRequest"},
+           "payload": {"session_id": "s", "prompt_id": "p", "tool_name": "AskUserQuestion",
+                       "tool_input": {"questions": [{"question": "q"}]}}}
+    events_path.write_text(_json.dumps(req) + "\n", encoding="utf-8")
+    col.run_once()
+
+    out = {"summary": {"event": "PostToolUse"},
+           "payload": {"session_id": "s", "prompt_id": "p", "tool_name": "AskUserQuestion",
+                       "tool_input": {"questions": [{"question": "q"}],
+                                      "answers": {"q": "A"}}}}
+    with open(events_path, "a", encoding="utf-8") as fh:
+        fh.write(_json.dumps(out) + "\n")
+    stats = col.run_once()
+    assert stats["outcomes"] == 1, "第二轮的结局必须挂上第一轮的请求，不能变成孤儿"
+    assert stats["orphans"] == 0
