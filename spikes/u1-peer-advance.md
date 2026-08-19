@@ -221,3 +221,74 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 - 沙盒目录 `/tmp/ccdesk-spike-u1` **未按原计划保留至归档完成后再删**——实际是在提交本次 spike 成果的
   同一条 `&&` 命令链里、于 `git commit` **之前**用 `rm -rf /tmp/ccdesk-spike-u1` 删除的（F-2 修复：
   原文「保留至证据归档完成后由后续步骤删除」与事实不符，已改写为实际情况）
+
+---
+
+## 补验（2026-08-19，P2 Task 8）：`dialog open`（真实权限弹窗）分支复现
+
+原 spike 只实测了 `waitingFor=input needed`（AskUserQuestion），权限弹窗分支当时因
+用户 `Bash(*)` 白名单无法在零副作用前提下触发，只能按架构类比**推断**，标为待验证。
+本次在 `/tmp/ccdesk-u1b` 沙盒用受限 settings 造出真实权限弹窗，把这个缺口补上了。
+
+### 先纠正一处口径错误：`waitingFor` 的实际取值是 `permission prompt`
+
+spec §二 与本文档此前都写作 **`dialog open`**。实测（CC 2.1.228）**不是**：
+
+```json
+{"pid": 76263, "cwd": "/private/tmp/ccdesk-u1b", "status": "waiting",
+ "waitingFor": "permission prompt", "name": "ccdesk-u1b-78"}
+```
+
+好在 ccdesk 生产代码只**透传** `waitingFor`（`sources.py` 里就是 `d.get("waitingFor")`），
+没有任何按值分支的逻辑，所以这个差异不影响功能，只影响文档记录。
+
+### 沙盒构造法（可复现）
+
+```json
+// settings.json —— 关掉 auto、清空 allow，让 Bash 必然弹窗
+{"permissions": {"defaultMode": "default", "allow": [], "deny": [], "ask": ["Bash"]}}
+```
+
+PTY 起交互式会话（`claude -p` 不行），让它执行 `touch probe.txt`，即卡在：
+
+```
+Permission rule Bash requires confirmation for this command.
+ Do you want to proceed?
+❯ 1. Yes
+  2. No
+```
+
+### 观测结果 —— 与 `input needed` 分支完全一致
+
+| 观测点 | 结果 |
+|---|---|
+| 发 peer 消息前 | `status=waiting`，`waitingFor=permission prompt` |
+| 消息是否送达 | ✅ 落进输入框，画面可见消息原文 |
+| 发消息后 +32s | `status=waiting`，`waitingFor=permission prompt` —— **两次快照无任何变化** |
+| 弹窗是否还在 | ✅ 仍在（`Do you want to proceed?` 未消失） |
+| 会话是否按消息要求回复 | ❌ 无 `U1B-CONSUMED` 回复（画面里那 1 次命中是消息原文自身） |
+| `probe.txt` 是否被创建 | ❌ 未创建 —— 弹窗从未被放行 |
+
+**结论：外部 peer 消息推不动卡在真实权限弹窗上的会话。** U1 原先的架构类比推断
+**成立**，现在有直接实验支撑，可以从「待验证」升级为「已验证」。
+
+对设计的含义不变：`waiting` 会话的程序化推进入口只有 `PreToolUse` 闸门一条。
+
+### 决定性对照：点掉弹窗后，那条消息**才**被消费
+
+上表只证明了「弹窗期间推不动」。为排除「消息根本没送到」这种平凡解释，
+接着人工点掉弹窗（给沙盒放一个 `CLICK` 文件，驱动脚本代发回车），观察同一条消息：
+
+| 时刻 | `status` / `waitingFor` | 那条 peer 消息 | `probe.txt` |
+|---|---|---|---|
+| 发消息前 | `waiting` / `permission prompt` | — | 不存在 |
+| 发消息后 +18s | `waiting` / `permission prompt` | 落进输入框，未消费 | 不存在 |
+| 发消息后 +50s | `waiting` / `permission prompt` | 仍未消费 | 不存在 |
+| **点掉弹窗后 +20s** | **`busy`**（无 waitingFor） | **被消费，会话回了 `U1B-CONSUMED`** | **已创建** |
+
+会话的回复经 peer 通道原样送回本会话（`from=uds:/tmp/cc-socks/76263.sock`，内容
+`U1B-CONSUMED`）—— 消息一直在队列里，弹窗是那道闸。
+
+**这就排除了「消息没送达」的可能**：同一条消息、同一个通道，弹窗期间不动，弹窗一消失
+立刻被消费。`dialog open`（实为 `permission prompt`）分支与 `input needed` 分支行为一致，
+U1 结论现已在两个分支上都有直接实验支撑。
