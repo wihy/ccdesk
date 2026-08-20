@@ -242,6 +242,12 @@ App 有两种运行形态，**行为差别只在通知**（见已知限制 2）�
 # CCDesk hotkey opt-cmd-D registered=true
 ```
 
+**图标**：`Icon/build-icon.sh` 从 SVG 现生成 `AppIcon.icns`，`build-app.sh` 打包时自动调用
+（缺 `rsvg-convert` 就用已提交的 `.icns` 兜底，不阻断构建）。两套 SVG 源码不是冗余：
+`icon-full.svg` 给 128px 以上，`icon-small.svg` 给 16/32px —— 细行缩到 16px 实测糊成一片，
+所以小尺寸简化成「一条会话行 + 一个光标」。改完图标记得 `touch` 一下 .app 让 Finder 重读，
+否则看到的还是缓存的旧图标。
+
 **签名**：`build-app.sh` 末尾做一次 ad-hoc 重签（`codesign --sign - --identifier com.ccdesk.app`），
 不是开发者签名/公证。这步不能省：swift build 产物的签名标识是 `CCDesk`，与 `CFBundleIdentifier`
 不符时 `usernotificationsd` 直接拒授权（日志 `requestAuthorization not allowed: com.ccdesk.app`）。

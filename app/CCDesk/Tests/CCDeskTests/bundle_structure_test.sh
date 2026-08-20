@@ -46,6 +46,11 @@ expect_key LSUIElement true
 #   Entitlement 'com.apple.private.usernotifications.bundle-identifiers' required
 #   requestAuthorization not allowed: com.ccdesk.app
 # swift build 出来的二进制是 adhoc linker-signed、标识为 "CCDesk"，对不上。
+# 图标：Resources/AppIcon.icns 与 Info.plist 的 CFBundleIconFile 必须成对存在。
+# 少一半就是「装了图标但系统不认」——Finder 里仍显示白纸默认图标，且不报任何错。
+check "Contents/Resources/AppIcon.icns 存在" "[ -f '$OUT/Contents/Resources/AppIcon.icns' ]"
+expect_key CFBundleIconFile AppIcon
+
 ident=$(codesign -dv "$OUT" 2>&1 | sed -n 's/^Identifier=//p')
 if [ "$ident" = "com.ccdesk.app" ]; then ok "签名标识 = com.ccdesk.app"
 else fail "签名标识期望 com.ccdesk.app，实际 ${ident:-<未签名>}"; fi

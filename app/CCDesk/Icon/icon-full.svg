@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <!-- 受光的值班面板，不是虚空：顶部有光，往下沉但不到纯黑 -->
+    <linearGradient id="panel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"   stop-color="#28325A"/>
+      <stop offset="50%"  stop-color="#171E38"/>
+      <stop offset="100%" stop-color="#151B31"/>
+    </linearGradient>
+
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"   stop-color="#FFFFFF" stop-opacity="0.16"/>
+      <stop offset="45%"  stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+
+    <linearGradient id="cursor" x1="0" y1="0" x2="0.3" y2="1">
+      <stop offset="0%"   stop-color="#FFC178"/>
+      <stop offset="45%"  stop-color="#FF9440"/>
+      <stop offset="100%" stop-color="#F2701A"/>
+    </linearGradient>
+
+    <!-- 辉光收紧：是"这一格在叫你"，不是一团雾 -->
+    <!-- 长尾衰减：单段渐变在深底上会留下可见的圆形边界，多段才化得开 -->
+    <radialGradient id="halo">
+      <stop offset="0%"   stop-color="#FF8C42" stop-opacity="0.44"/>
+      <stop offset="22%"  stop-color="#FF8C42" stop-opacity="0.20"/>
+      <stop offset="44%"  stop-color="#FF8C42" stop-opacity="0.075"/>
+      <stop offset="68%"  stop-color="#FF8C42" stop-opacity="0.022"/>
+      <stop offset="100%" stop-color="#FF8C42" stop-opacity="0"/>
+    </radialGradient>
+
+    <filter id="drop" x="-25%" y="-25%" width="150%" height="160%">
+      <feDropShadow dx="0" dy="16" stdDeviation="20" flood-color="#000000" flood-opacity="0.32"/>
+    </filter>
+  </defs>
+
+  <g filter="url(#drop)">
+    <rect x="88" y="80" width="848" height="848" rx="192" fill="url(#panel)"/>
+    <rect x="88" y="80" width="848" height="848" rx="192" fill="url(#rim)"/>
+    <rect x="91" y="83" width="842" height="842" rx="190"
+          fill="none" stroke="#6B79A8" stroke-opacity="0.22" stroke-width="6"/>
+  </g>
+
+  <!-- 沉默的会话：方头短行，像终端里已经跑完的输出 -->
+  <g fill="#333D5C">
+    <rect x="260" y="322" width="286" height="58" rx="14"/>
+    <rect x="260" y="644" width="232" height="58" rx="14"/>
+  </g>
+
+  <!-- 在等你的那一条：行本身更亮，光标紧跟行末 -->
+  <circle cx="722" cy="512" r="215" fill="url(#halo)"/>
+  <rect x="260" y="483" width="400" height="58" rx="14" fill="#5C6A96"/>
+  <rect x="676" y="466" width="92" height="92" rx="18" fill="url(#cursor)"/>
+</svg>

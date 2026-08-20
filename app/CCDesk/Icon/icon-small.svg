@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- 16/32px 专用简化版。
+       细行在这个尺寸下必糊成一片，所以只留最核心的一句话：
+       一条安静的会话行 + 一个在等你的光标。辉光去掉（小尺寸只会变成脏点）。 -->
+  <defs>
+    <linearGradient id="panel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"   stop-color="#2A3560"/>
+      <stop offset="55%"  stop-color="#181F3A"/>
+      <stop offset="100%" stop-color="#151B31"/>
+    </linearGradient>
+    <linearGradient id="cursor" x1="0" y1="0" x2="0.3" y2="1">
+      <stop offset="0%"   stop-color="#FFC178"/>
+      <stop offset="50%"  stop-color="#FF9440"/>
+      <stop offset="100%" stop-color="#F2701A"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="72" y="72" width="880" height="880" rx="200" fill="url(#panel)"/>
+  <rect x="76" y="76" width="872" height="872" rx="197"
+        fill="none" stroke="#7C8ABC" stroke-opacity="0.26" stroke-width="10"/>
+
+  <rect x="238" y="466" width="286" height="92" rx="24" fill="#4A557C"/>
+  <rect x="606" y="430" width="164" height="164" rx="38" fill="url(#cursor)"/>
+</svg>
