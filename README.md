@@ -215,14 +215,14 @@ AskUserQuestion 命中了闸门并被正确降级（账本里那条 `guardrail:m
 ### 菜单栏 App
 
 ```bash
-~/ccdesk/bin/ccdesk-app install     # swift build -c release → 打包装到 ~/Applications/CCDesk.app
+~/ccdesk/bin/ccdesk-app install     # swift build -c release → 打包装到 /Applications/CCDesk.app
 ~/ccdesk/bin/ccdesk-app start       # 装了 .app 就起 .app，没装则起裸可执行
 ~/ccdesk/bin/ccdesk-app stop        # 两种形态都能停
 ~/ccdesk/bin/ccdesk-app status      # App（两种形态分别报）+ daemon + health
 ```
 
 装完也可以从启动台 / Spotlight 搜 `CCDesk` 打开。菜单栏徽标显示等待计数，点开看三区面板。
-开机自启：系统设置 → 通用 → 登录项与扩展 →「登录时打开」里加 `~/Applications/CCDesk.app`。
+开机自启：系统设置 → 通用 → 登录项与扩展 →「登录时打开」里加 `/Applications/CCDesk.app`。
 
 App 有两种运行形态，**行为差别只在通知**（见已知限制 2）：`.app` 有 bundle identifier，通知可用；
 裸可执行（`.build/release/CCDesk`）没有，通知被守卫跳过。两者会抢同一个 status item，所以
@@ -238,7 +238,7 @@ App 有两种运行形态，**行为差别只在通知**（见已知限制 2）�
 （`open` 起的进程 NSLog 不落盘，只有前台跑才看得到这行）：
 
 ```bash
-~/Applications/CCDesk.app/Contents/MacOS/CCDesk     # 前台跑，读启动日志
+/Applications/CCDesk.app/Contents/MacOS/CCDesk      # 前台跑，读启动日志
 # CCDesk hotkey opt-cmd-D registered=true
 ```
 

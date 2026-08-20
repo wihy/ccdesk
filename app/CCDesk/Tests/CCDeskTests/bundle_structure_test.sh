@@ -1,5 +1,5 @@
 #!/bin/sh
-# build-app.sh 的打包产物结构测试（真跑脚本，装到临时目录，不碰 ~/Applications）。
+# build-app.sh 的打包产物结构测试（真跑脚本，装到临时目录，不碰真实安装位置）。
 #   sh Tests/CCDeskTests/bundle_structure_test.sh
 # 不放进 swift test：在 swift test 里再跑一次 swift build -c release 会撞同一个
 # .build 锁，风险大于收益。

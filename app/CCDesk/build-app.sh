@@ -1,6 +1,6 @@
 #!/bin/sh
 # 把 release 二进制装进标准 .app bundle。
-#   ./build-app.sh [输出路径]        默认 ~/Applications/CCDesk.app
+#   ./build-app.sh [输出路径]        默认 /Applications/CCDesk.app
 #
 # 打包做两件事：
 #   1. CFBundleIdentifier —— 裸 SPM 可执行文件的 Bundle.main.bundleIdentifier 是 nil，
@@ -9,7 +9,10 @@
 set -eu
 
 APP_DIR=$(cd "$(dirname "$0")" && pwd)
-OUT=${1:-$HOME/Applications/CCDesk.app}
+# 装系统级 /Applications：Finder 侧边栏的「应用程序」指的就是它。
+# 用户级 ~/Applications 也能跑、也能被 Spotlight 索引，但在那个列表里翻不着。
+# admin 组对 /Applications 有写权限，不需要 sudo。
+OUT=${1:-/Applications/CCDesk.app}
 VERSION=0.1.0
 
 (cd "$APP_DIR" && swift build -c release)

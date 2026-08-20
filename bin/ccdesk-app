@@ -6,7 +6,7 @@ set -eu
 
 APP_DIR="/Users/chunhaixu/ccdesk/app/CCDesk"
 BIN="$APP_DIR/.build/release/CCDesk"
-BUNDLE="$HOME/Applications/CCDesk.app"
+BUNDLE="/Applications/CCDesk.app"
 PIDFILE="/tmp/ccdesk-app.pid"
 LOGFILE="/tmp/ccdesk-app.log"
 
