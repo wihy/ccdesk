@@ -15,6 +15,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let model = PanelModel()
     private var popover: NSPopover!
     private var timer: Timer?
+    private var pendingTimer: Timer?
+    /// 已经推过通知的待决项，避免每秒轮询把同一题反复弹出来。
+    private var notifiedPending: Set<String> = []
     // 热键路径的 1×1 透明锚点窗口（徽标被 macOS 隐藏时 statusItem.button 不在屏上，
     // 锚它会弹到离屏位置）。popover 关闭即释放。
     private var anchorWindow: NSWindow?
@@ -37,6 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.contentViewController = NSHostingController(
             rootView: PanelView(model: model,
                                 onOpenCwd: { [weak self] in self?.openSession($0) },
+                                onAnswer: { [weak self] in self?.answer($0, with: $1) },
                                 onQuit: { NSApp.terminate(nil) }))
 
         // ⌥⌘D：不依赖徽标可见性的入口。菜单栏排满时 macOS 会静默隐藏排后面的第三方
@@ -57,6 +61,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             Task { await self?.refresh() }
+        }
+        // 待决项单独用更快的节拍：窗口只有 23s，3s 一轮意味着最坏情况白白烧掉
+        // 大半个窗口才让你看见。这个接口很轻（内存里的列表，不 fork 子进程）。
+        pendingTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { await self?.refreshPending() }
         }
         Task { await refresh() }
     }
@@ -132,6 +141,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// 点击会话行：优先把 cmux 切到它所在的 workspace 并置前；
     /// 映射不上（会话不在 cmux 里 / cmux 没跑 / 命令失败）才回退到打开 cwd。
+    /// 拉待决项。比主刷新快得多，所以只碰这一个接口，不连带刷会话/对账。
+    @MainActor
+    private func refreshPending() async {
+        guard let payload = try? await client.pending() else { return }
+        let previous = Set(model.pending.map(\.reqId))
+        model.pending = payload.items
+
+        // 新出现的才推通知。判官可能几秒内就抢答了，那种情况下这一题
+        // 根本不该打扰你——所以通知只在它真的挂住时发。
+        let current = Set(payload.items.map(\.reqId))
+        for item in payload.items where !previous.contains(item.reqId)
+            && !notifiedPending.contains(item.reqId) {
+            notifiedPending.insert(item.reqId)
+            notifyPending(item)
+        }
+        notifiedPending.formIntersection(current)   // 决完的从记忆里摘掉
+    }
+
+    /// 人在面板上点了一个选项。
+    @MainActor
+    private func answer(_ item: PendingItem, with option: PendingOption) {
+        // 先本地摘掉，别让用户对着一张已经点过的卡片再点一次
+        model.pending.removeAll { $0.reqId == item.reqId }
+        Task {
+            _ = try? await client.resolve(reqId: item.reqId, answer: option.label)
+            await refreshPending()
+        }
+    }
+
+    private func notifyPending(_ item: PendingItem) {
+        guard Bundle.main.bundleIdentifier != nil else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "\(item.sessionName.isEmpty ? "会话" : item.sessionName) 在等你选"
+        content.body = item.question
+        content.sound = .default
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: "pending-\(item.reqId)",
+                                  content: content, trigger: nil))
+    }
+
     private func openSession(_ session: Session) {
         Task { @MainActor in
             var switched = false

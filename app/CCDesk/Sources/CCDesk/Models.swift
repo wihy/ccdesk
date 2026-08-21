@@ -135,3 +135,41 @@ private func footprintTime(_ date: Date, _ timeZone: TimeZone) -> String {
     formatter.dateFormat = "MM-dd HH:mm:ss"
     return formatter.string(from: date)
 }
+
+// MARK: - 待决项（人工一键处理）
+
+/// 一个挂起中的选择题。daemon 那边判官和人在并行答，谁先给答案用谁——
+/// 所以这里的 remainingS 会一直走，且随时可能因为判官抢先而整项消失。
+struct PendingItem: Codable, Equatable, Identifiable {
+    let reqId: String
+    let question: String
+    let header: String
+    let options: [PendingOption]
+    let sessionName: String
+    let cwd: String
+    let remainingS: Double
+
+    var id: String { reqId }
+
+    enum CodingKeys: String, CodingKey {
+        case reqId = "req_id"
+        case question, header, options, cwd
+        case sessionName = "session_name"
+        case remainingS = "remaining_s"
+    }
+}
+
+struct PendingOption: Codable, Equatable {
+    let label: String
+    let description: String
+}
+
+struct PendingPayload: Codable {
+    let items: [PendingItem]
+}
+
+/// `/resolve` 的回执。accepted=false 多半是判官抢先答了，或选项不合法。
+struct ResolveResult: Codable {
+    let accepted: Bool
+    let reason: String?
+}

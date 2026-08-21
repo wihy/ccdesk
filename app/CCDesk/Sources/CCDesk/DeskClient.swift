@@ -58,3 +58,28 @@ extension DeskClient {
         return try JSONDecoder().decode(FocusResult.self, from: data)
     }
 }
+
+extension DeskClient {
+    /// 拉取挂起中的待决项。空列表是常态。
+    func pending() async throws -> PendingPayload {
+        try await get(PendingPayload.self, path: "/pending")
+    }
+
+    /// 替用户答一个待决项。
+    ///
+    /// accepted=false 不是错误：判官可能刚好抢先答了，或这一项已经过期。
+    /// 面板据此提示，而不是把它当失败。
+    func resolve(reqId: String, answer: String) async throws -> ResolveResult {
+        var request = URLRequest(url: base.appendingPathComponent("/resolve"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 5
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(
+            withJSONObject: ["req_id": reqId, "answer": answer])
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw DeskError.unreachable
+        }
+        return try JSONDecoder().decode(ResolveResult.self, from: data)
+    }
+}

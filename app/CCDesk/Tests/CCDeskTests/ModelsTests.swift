@@ -217,3 +217,45 @@ final class FocusResultTests: XCTestCase {
         XCTAssertNil(r.reason)
     }
 }
+
+// MARK: - 待决项解析
+
+final class PendingItemTests: XCTestCase {
+    func testDecodesPendingPayload() throws {
+        let json = """
+        {"items":[{"req_id":"r1","question":"选 A 还是 B？","header":"选择",
+          "options":[{"label":"选项A","description":"说明A"},
+                     {"label":"选项B","description":""}],
+          "session_id":"s1","session_name":"soulapp-f3",
+          "cwd":"/Users/x/SoulApp","remaining_s":18.4}]}
+        """.data(using: .utf8)!
+        let payload = try JSONDecoder().decode(PendingPayload.self, from: json)
+        XCTAssertEqual(payload.items.count, 1)
+        let item = payload.items[0]
+        XCTAssertEqual(item.reqId, "r1")
+        XCTAssertEqual(item.question, "选 A 还是 B？")
+        XCTAssertEqual(item.sessionName, "soulapp-f3")
+        XCTAssertEqual(item.options.map(\.label), ["选项A", "选项B"])
+        XCTAssertEqual(item.remainingS, 18.4, accuracy: 0.01)
+        // Identifiable 用 reqId —— ForEach 靠它区分，写错会导致卡片错位
+        XCTAssertEqual(item.id, "r1")
+    }
+
+    func testDecodesEmptyPending() throws {
+        let payload = try JSONDecoder().decode(
+            PendingPayload.self, from: #"{"items":[]}"#.data(using: .utf8)!)
+        XCTAssertTrue(payload.items.isEmpty)
+    }
+
+    func testDecodesResolveResult() throws {
+        let ok = try JSONDecoder().decode(
+            ResolveResult.self, from: #"{"accepted":true,"reason":null}"#.data(using: .utf8)!)
+        XCTAssertTrue(ok.accepted)
+        // accepted=false 不是错误：判官可能刚好抢先答了
+        let rejected = try JSONDecoder().decode(
+            ResolveResult.self,
+            from: #"{"accepted":false,"reason":"already_decided_or_illegal"}"#.data(using: .utf8)!)
+        XCTAssertFalse(rejected.accepted)
+        XCTAssertEqual(rejected.reason, "already_decided_or_illegal")
+    }
+}

@@ -307,12 +307,11 @@ curl -s http://127.0.0.1:8787/health     # 挂了 → 健康条空
 
 ## 已知限制
 
-1. **判官在本机没有可用通道，所以自动代答实际不会发生** —— 判官只认 `ANTHROPIC_API_KEY`
-   这一条路，而本机没配（也没有 `apiKeyHelper`）。另一条看似可行的 `claude -p --model haiku`
-   实测**单次 42.5s / 42.8s**（两次，含空 settings + 禁 MCP 的最小配置），远超闸门 7.5s 的
-   自降级线，塞不进去。于是每条请求都走 spec §9 的降级路径，`decided_by` 如实写
-   `judge_unavailable`，回落终端原生弹窗——**等于装了闸门但行为与没装一样**。
-   配上 `ANTHROPIC_API_KEY` 后判官自己就活了，代码路径已测（14 条用例）。
+1. **判官用的是本机已登录的 Claude，不需要另配 API key** —— 走 `claude-agent-sdk` 的
+   常驻进程跑 haiku。**常驻是前提不是优化**：每次新起进程实测 44.5s，常驻后降到
+   3.2~9.7s（首次含启动 11.3s）。那 40s 是 207MB 二进制的启动开销，daemon 起来时
+   一次性付掉。实测真实请求 `allow / judge:haiku`，热起来后 **3.2-3.5s** 出答案。
+   判官进程挂了/答歪了/超时都只是「这次判不了」，窗口留给人，不报错。
 2. **自动代答只覆盖「单问题 + 单选 + 合法 label」** —— 这是 U5 唯一实测过的形态。
    多问题 / `multiSelect:true` / 无 options / 判官答了个选项外的字符串，一律降级 `ask`。
    这是有意为之：注入一个不存在的选项等于**伪造用户意图**，比不自动化糟得多。
@@ -345,7 +344,9 @@ curl -s http://127.0.0.1:8787/health     # 挂了 → 健康条空
 | 闸门安装通道（`ccdesk gate install/uninstall/status`） | ✅ 幂等 + 自动备份 + 只删自己 |
 | `updatedInput` 代答 | ✅ 沙盒实测坐实（会话从未弹窗，见下） |
 | 四层决策 + U5 四道护栏 | ✅ `guardrail → cache → judge → 降级`，永不 deny |
-| decision writer + `allow_count` | ✅ `why` 不再恒 None；对账从 1/4 可达变成 2/4（另两类等判官） |
+| decision writer + `allow_count` | ✅ `why` 不再恒 None |
+| **人工一键处理** | ✅ 判官与人**并行**答，谁先给答案用谁 |
+| 常驻判官（用本机登录的 Claude） | ✅ 热起来后 3.2s 出答案，无需 API key |
 | `ccdesk replay` | ✅ 改规则前先看会把哪些 `ask` 变成 `allow` |
 | ledger 大账本窗口读 / collector known 增量 | ✅ 阈值内行为与此前逐字节一致 |
 | U1 权限弹窗分支复现 | ✅ 见 `spikes/u1-peer-advance.md` 补验节 |

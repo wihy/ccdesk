@@ -7,18 +7,26 @@ final class PanelModel: ObservableObject {
     @Published var anomalies: [Anomaly] = []
     @Published var health: HealthPayload?
     @Published var unreachable = false
+    /// 挂起中的选择题。判官和人在并行答，所以这个列表随时可能因判官抢先而变空。
+    @Published var pending: [PendingItem] = []
 }
 
-/// 三区面板：会话 / 对账异常 / 健康条。纯展示，数据与动作都由外部传入。
+/// 面板：待决项 / 会话 / 对账异常 / 健康条。纯展示，数据与动作都由外部传入。
 struct PanelView: View {
     @ObservedObject var model: PanelModel
     let onOpenCwd: (Session) -> Void
+    let onAnswer: (PendingItem, PendingOption) -> Void
     let onQuit: () -> Void
 
     @State private var expanded: Set<String> = []
 
     var body: some View {
         VStack(spacing: 0) {
+            // 待决项排在最上面：它有时限，比会话列表紧急。没有时整块不占位。
+            if !model.pending.isEmpty {
+                pendingZone
+                Divider()
+            }
             sessionZone
             Divider()
             anomalyZone
@@ -26,6 +34,62 @@ struct PanelView: View {
             footer
         }
         .frame(width: 420, height: 520)
+    }
+
+    // MARK: - 待决项：会话在等你答一道选择题
+
+    private var pendingZone: some View {
+        VStack(spacing: 0) {
+            zoneHeader("在等你 \(model.pending.count)") { EmptyView() }
+            ScrollView {
+                VStack(spacing: 8) {
+                    ForEach(model.pending) { item in
+                        pendingCard(item)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.bottom, 8)
+            }
+            .frame(maxHeight: 200)
+        }
+        .background(Color.orange.opacity(0.06))
+    }
+
+    private func pendingCard(_ item: PendingItem) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text(item.sessionName.isEmpty ? "会话" : item.sessionName)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.orange)
+                Spacer(minLength: 8)
+                // 倒计时是给人的判断依据：来不及就别点了，直接去终端答
+                Text("\(Int(item.remainingS))s")
+                    .font(.system(size: 11).monospacedDigit())
+                    .foregroundStyle(item.remainingS < 8 ? Color.red : Color.secondary)
+            }
+            Text(item.question)
+                .font(.system(size: 12, weight: .medium))
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 6) {
+                ForEach(item.options, id: \.label) { option in
+                    Button { onAnswer(item, option) } label: {
+                        Text(option.label)
+                            .font(.system(size: 11))
+                            .lineLimit(1)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Color.orange.opacity(0.18))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.plain)
+                    .help(option.description.isEmpty ? option.label : option.description)
+                }
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.10))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     // MARK: - 一区：会话
