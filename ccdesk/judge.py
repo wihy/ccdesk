@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from dataclasses import dataclass
 
 from . import config
@@ -104,6 +105,29 @@ def cache_key(payload: dict) -> str:
     return f"{session}|{cwd}|{tool_name}:{input_fingerprint(tool_input, tool_name)}"
 
 
+_RUNTIME = None
+_RUNTIME_LOCK = threading.Lock()
+
+
+def _judge_runtime():
+    """常驻判官单例。起不来就返回 None —— 判官不可用是常态，不是故障。"""
+    global _RUNTIME
+    with _RUNTIME_LOCK:
+        if _RUNTIME is None:
+            try:
+                from .judge_runtime import Runtime
+                _RUNTIME = Runtime()
+            except Exception:              # noqa: BLE001
+                return None
+        return _RUNTIME if _RUNTIME.available() else None
+
+
+def pending_req_id(payload: dict) -> str:
+    """人工窗口用的 key，与账本 req_id 同源，方便 App 点回来对上号。"""
+    from .decisions import build_req_id
+    return build_req_id(payload)
+
+
 def _llm_available() -> bool:
     """判官通道是否可用。
 
@@ -151,7 +175,8 @@ def _call_llm_judge(question: dict, budget_s: float) -> tuple[str, float] | None
         return None
 
 
-def decide(payload: dict, cache: dict) -> Verdict:
+def decide(payload: dict, cache: dict, board=None,
+           window_s: float | None = None) -> Verdict:
     """主入口。任何一步不确定都落 ask ——「永不在不确定时 allow」。"""
     if not isinstance(payload, dict):
         return Verdict("ask", "guardrail:no_questions")
@@ -180,27 +205,79 @@ def decide(payload: dict, cache: dict) -> Verdict:
             return Verdict("allow", "cache", confidence,
                            build_updated_input(tool_input, answer))
 
+    if board is not None:
+        return _decide_with_window(payload, tool_input, question, key, cache,
+                                   board, window_s)
+
+    # 不带 board 的同步路径：replay 之类的只读调用方走这里，行为不变。
     if not _llm_available():
         return Verdict("ask", "judge_unavailable")
-
     try:
         result = _call_llm_judge(question, config.JUDGE_BUDGET_S)
     except Exception:              # noqa: BLE001 — 判官异常绝不能逃到 daemon 外
         return Verdict("ask", "judge_error")
     if result is None:
         return Verdict("ask", "judge_error")
-
     try:
         answer, confidence = result
         confidence = float(confidence)
     except (TypeError, ValueError):
         return Verdict("ask", "judge_error")
-
     if not validate_answer(question, answer):
         return Verdict("ask", "guardrail:illegal_label", confidence)
     if confidence < config.JUDGE_MIN_CONFIDENCE:
         return Verdict("ask", "judge:low_confidence", confidence)
-
     cache[key] = (answer, confidence)
     return Verdict("allow", "judge:haiku", confidence,
+                   build_updated_input(tool_input, answer))
+
+
+def _decide_with_window(payload: dict, tool_input: dict, question: dict,
+                        key: str, cache: dict, board, window_s: float) -> Verdict:
+    """判官与人**并行**，谁先给答案用谁。
+
+    串行等两者会超出任何合理窗口（判官 5.7~9.7s + 人 10-15s），
+    并行则总时长是 max 而非 sum：判官快时你根本不会被打扰，
+    判官没把握时你还有十几秒可点。
+    """
+    req_id = pending_req_id(payload)
+    labels = [o.get("label") for o in question.get("options", [])
+              if isinstance(o, dict) and o.get("label")]
+    context = {
+        "session_id": payload.get("session_id", ""),
+        "session_name": payload.get("session_name", ""),
+        "cwd": payload.get("cwd", ""),
+        "header": question.get("header", ""),
+    }
+    item = board.open(req_id, tool_input, context,
+                      window_s if window_s is not None else config.PENDING_WINDOW_S)
+
+    def consult_judge() -> None:
+        runtime = _judge_runtime()
+        if runtime is None:
+            return
+        try:
+            result = runtime.ask(str(question.get("question") or ""), labels,
+                                 config.JUDGE_BUDGET_S)
+        except Exception:          # noqa: BLE001
+            return
+        if result is None:
+            return
+        answer, confidence = result
+        # 没把握就别抢答：把窗口留给人，比塞一个半信半疑的答案强
+        if confidence >= config.JUDGE_MIN_CONFIDENCE:
+            if board.resolve(req_id, answer, by="judge:haiku"):
+                cache[key] = (answer, confidence)
+
+    threading.Thread(target=consult_judge, daemon=True).start()
+    try:
+        answer, by = board.wait(item)
+    finally:
+        board.close(item)
+
+    if answer is None:
+        return Verdict("ask", "window_expired")
+    if not validate_answer(question, answer):     # 兜底，board 已校验过一次
+        return Verdict("ask", "guardrail:illegal_label")
+    return Verdict("allow", by or "human", None,
                    build_updated_input(tool_input, answer))

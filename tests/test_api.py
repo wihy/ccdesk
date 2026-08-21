@@ -206,10 +206,18 @@ def test_decide_on_garbage_still_returns_ask(server):
 
 
 def test_decide_allow_carries_updated_input(server, monkeypatch):
-    """判官放行时必须带 updatedInput —— 不带的话 CC 会直接丢弃这个 allow（U5 坐实）。"""
+    """判官放行时必须带 updatedInput —— 不带的话 CC 会直接丢弃这个 allow（U5 坐实）。
+
+    /decide 现在走「判官 + 人工并行」，所以要 mock 常驻判官而不是旧的同步入口；
+    否则判官不可用、没人点，请求会一直等到 23s 窗口到点。
+    """
     from ccdesk import judge
-    monkeypatch.setattr(judge, "_llm_available", lambda: True)
-    monkeypatch.setattr(judge, "_call_llm_judge", lambda *a, **k: ("A", 0.95))
+
+    class FakeRT:
+        def available(self): return True
+        def ask(self, q, labels, budget_s): return ("A", 0.95)
+
+    monkeypatch.setattr(judge, "_judge_runtime", lambda: FakeRT())
     payload = {"session_id": "s8", "prompt_id": "p8", "tool_name": "AskUserQuestion",
                "tool_input": {"questions": [{"question": "选啥", "header": "h",
                                              "options": [{"label": "A"}, {"label": "B"}],
@@ -305,3 +313,52 @@ def test_focus_route_rejects_bad_pid(server):
         body = post(server, "/focus", bad)
         assert body["ok"] is False
         assert body["reason"] == "bad_pid"
+
+
+def test_pending_route_empty_by_default(server):
+    """没有待决项是常态，不是错误。"""
+    body = get(server, "/pending")
+    assert body["items"] == []
+
+
+def test_pending_and_resolve_roundtrip(server):
+    """面板拿到待决项 → 点一个选项 → 阻塞中的 /decide 立刻拿到答案。"""
+    import threading
+    payload = {"session_id": "sp", "prompt_id": "pp", "tool_name": "AskUserQuestion",
+               "tool_input": {"questions": [{"question": "端到端选哪个", "header": "h",
+                                             "options": [{"label": "甲"}, {"label": "乙"}],
+                                             "multiSelect": False}]}}
+    result = {}
+
+    def call_decide():
+        result["body"] = post(server, "/decide", payload)
+
+    t = threading.Thread(target=call_decide, daemon=True)
+    t.start()
+
+    # 等它挂到待决板上
+    deadline = time.time() + 5
+    items = []
+    while time.time() < deadline:
+        items = get(server, "/pending")["items"]
+        if items:
+            break
+        time.sleep(0.1)
+    assert items, "/decide 应当把请求挂进待决板"
+    assert items[0]["question"] == "端到端选哪个"
+    assert [o["label"] for o in items[0]["options"]] == ["甲", "乙"]
+    assert items[0]["remaining_s"] > 0
+
+    accepted = post(server, "/resolve", {"req_id": items[0]["req_id"], "answer": "乙"})
+    assert accepted["accepted"] is True
+
+    t.join(timeout=10)
+    assert result["body"]["permissionDecision"] == "allow"
+    assert result["body"]["reason"] == "human"
+    assert result["body"]["updatedInput"]["answers"] == {"端到端选哪个": "乙"}
+    assert get(server, "/pending")["items"] == [], "决完要从板上摘掉"
+
+
+def test_resolve_rejects_illegal_answer(server):
+    assert post(server, "/resolve", {"req_id": "nope", "answer": "x"})["accepted"] is False
+    assert post(server, "/resolve", {"answer": "x"})["reason"] == "bad_req_id"

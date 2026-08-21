@@ -213,3 +213,69 @@ def test_decide_rejects_non_askuserquestion_tool():
                       "tool_input": ti}, {})
     assert v.decision == "ask"
     assert v.decided_by == "guardrail:unsupported_tool"
+
+
+# ── 判官 + 人工并行（P2 补齐的那一项）──────────────────────────────
+
+def test_decide_returns_human_answer(monkeypatch):
+    """人先点 → 用人的答案，decided_by 标 human。"""
+    import threading
+    from ccdesk import pending as pending_mod
+    board = pending_mod.Board()
+
+    monkeypatch.setattr(judge, "_judge_runtime", lambda: None)   # 判官不可用
+    threading.Timer(0.1, lambda: board.resolve(
+        judge.pending_req_id(_payload(SINGLE)), "选项B", by="human")).start()
+
+    v = judge.decide(_payload(SINGLE), {}, board=board, window_s=3)
+    assert v.decision == "allow"
+    assert v.decided_by == "human"
+    assert v.updated_input["answers"] == {"选 A 还是 B？": "选项B"}
+
+
+def test_decide_returns_judge_answer_when_it_wins(monkeypatch):
+    """判官先到 → 用判官的，不打扰人。"""
+    from ccdesk import pending as pending_mod
+
+    class FakeRT:
+        def available(self): return True
+        def ask(self, q, labels, budget_s): return ("选项A", 0.95)
+
+    monkeypatch.setattr(judge, "_judge_runtime", lambda: FakeRT())
+    v = judge.decide(_payload(SINGLE), {}, board=pending_mod.Board(), window_s=3)
+    assert v.decision == "allow"
+    assert v.decided_by == "judge:haiku"
+
+
+def test_low_confidence_judge_does_not_answer(monkeypatch):
+    """判官没把握就别抢答——把窗口留给人，而不是直接 ask 收场。"""
+    import threading
+    from ccdesk import pending as pending_mod
+    board = pending_mod.Board()
+
+    class Unsure:
+        def available(self): return True
+        def ask(self, q, labels, budget_s): return ("选项A", 0.4)
+
+    monkeypatch.setattr(judge, "_judge_runtime", lambda: Unsure())
+    threading.Timer(0.3, lambda: board.resolve(
+        judge.pending_req_id(_payload(SINGLE)), "选项B", by="human")).start()
+    v = judge.decide(_payload(SINGLE), {}, board=board, window_s=3)
+    assert v.decided_by == "human", "判官低置信时人还应该有机会点"
+
+
+def test_timeout_falls_back_to_ask(monkeypatch):
+    """判官不可用 + 人没点 → 到点回落 ask，行为等于没装闸门。"""
+    from ccdesk import pending as pending_mod
+    monkeypatch.setattr(judge, "_judge_runtime", lambda: None)
+    v = judge.decide(_payload(SINGLE), {}, board=pending_mod.Board(), window_s=0.3)
+    assert v.decision == "ask"
+    assert v.decided_by == "window_expired"
+
+
+def test_board_absent_keeps_old_behaviour(monkeypatch):
+    """不传 board 时退回原来的同步路径——CLI replay 之类的调用方不该被牵连。"""
+    monkeypatch.setattr(judge, "_judge_runtime", lambda: None)
+    v = judge.decide(_payload(SINGLE), {})
+    assert v.decision == "ask"
+    assert v.decided_by == "judge_unavailable"

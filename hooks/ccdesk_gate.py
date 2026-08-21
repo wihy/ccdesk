@@ -2,6 +2,12 @@
 """PreToolUse 闸门。它只做一件事：问 daemon 要决定，问不到就 ask。
 
 铁律：永不 deny、永不非零退出、永不打印 traceback。
+
+自降级线 25s：daemon 那边判官与人工并行答（判官实测 5.7~9.7s，人看到通知
+再点约需 10-15s），25s 能同时容下两者。三层超时错开：
+    CC hook timeout 40s > 本文件 25s > daemon 人工窗口 23s
+本文件**有意不 import ccdesk.config**（hook 进程要极简、要能独立跑），
+所以默认值与 config 的一致性靠 tests/test_gate.py 那条测试盯着。
 """
 from __future__ import annotations
 
@@ -23,16 +29,16 @@ _NEEDS_UPDATED_INPUT = frozenset({"AskUserQuestion"})
 
 
 def _env_deadline() -> float:
-    """解析 CCDESK_GATE_DEADLINE；配错（非数字/NaN/inf/非正数）一律回落 7.5。
+    """解析 CCDESK_GATE_DEADLINE；配错（非数字/NaN/inf/非正数）一律回落 25.0。
 
     必须在导入期绝不抛异常：这条路径上任何 ValueError 都会变成 traceback + 非零退出。
     """
     try:
-        value = float(os.environ.get("CCDESK_GATE_DEADLINE", "7.5"))
+        value = float(os.environ.get("CCDESK_GATE_DEADLINE", "25.0"))
     except ValueError:
-        return 7.5
+        return 25.0
     if not math.isfinite(value) or value <= 0:
-        return 7.5
+        return 25.0
     return value
 
 

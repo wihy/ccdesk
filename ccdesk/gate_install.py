@@ -33,10 +33,12 @@ def hook_entry() -> dict:
             "type": "command",
             "command": sys.executable,
             "args": [GATE_PATH],
-            # CC 侧 timeout 只是最外层保险。真正的自降级由闸门内部 7.5s
-            # watchdog 保证 —— U2 坐实 CC 超时后是 fall through 到默认权限
-            # 管线、不保证拒绝，所以不能指望它兜底。
-            "timeout": 10,
+            # CC 侧 timeout 只是最外层保险，必须大于闸门自己的自降级线（25s），
+            # 否则 CC 先超时、闸门的决定还没送出去就作废了。
+            # U2 坐实 timeout ≥300s 可设，40 有充足余量。真正的兜底仍是闸门
+            # 内部 watchdog —— CC 超时后是 fall through 到默认权限管线、
+            # 不保证拒绝，所以不能指望它。
+            "timeout": 40,
         }],
     }
 

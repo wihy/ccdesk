@@ -45,7 +45,12 @@ API_HOST = "127.0.0.1"
 API_PORT = _num("CCDESK_API_PORT", 8787, int)
 
 # 闸门自降级线（秒）。Task 1 的 U2 spike 结论若不同，改这里。
-GATE_DEADLINE_S = _num("CCDESK_GATE_DEADLINE", 7.5)
+# 闸门自降级线。三层超时必须错开，否则互相踩：
+#   CC hook timeout 40s > 闸门自降级 25s > daemon 人工窗口 23s（留 HTTP 往返）
+# 25s 不是拍的：判官常驻后实测 5.7~9.7s，人看到通知再点约需 10-15s，
+# 两者并行取 max，25s 能同时容下。U2 坐实 hook timeout ≥300s，所以这条线
+# 是我们自己选的取舍点，不是技术上限——代价是你不在跟前时会话多悬这么久。
+GATE_DEADLINE_S = _num("CCDESK_GATE_DEADLINE", 25.0)
 
 # 对账阈值（秒）
 DANGLING_REQUEST_S = 60
@@ -59,9 +64,13 @@ RECON_WINDOW_S = _num("CCDESK_RECON_WINDOW", 86400.0)
 # ── P2 判官 ──────────────────────────────────────────────
 # 判官自动作答的置信度门。低于它一律 ask，绝不猜。
 JUDGE_MIN_CONFIDENCE = _num("CCDESK_JUDGE_MIN_CONF", 0.85)
-# 判官单次调用预算（秒）。超出即视作不可用，降级 ask。
-# 注意这是 GATE_DEADLINE_S(7.5) 内的一段，不能贴着它设。
-JUDGE_BUDGET_S = _num("CCDESK_JUDGE_BUDGET", 3.0)
+# 判官单次调用预算（秒）。判官与人工**并行**跑，所以这不是从总窗口里切走的一段，
+# 而是「判官最多想多久」——超了就当它没答，人工窗口照样继续等。
+JUDGE_BUDGET_S = _num("CCDESK_JUDGE_BUDGET", 18.0)
+
+# 人工窗口：比 GATE_DEADLINE_S 短一截，留出 HTTP 往返，
+# 免得 daemon 还在等、闸门那边已经自己降级走了。
+PENDING_WINDOW_S = _num("CCDESK_PENDING_WINDOW", 23.0)
 JUDGE_MODEL = os.environ.get("CCDESK_JUDGE_MODEL", "claude-haiku-4-5-20251001")
 
 # 账本超过它，/ledger 路由自动带 since 过滤（当前实测 9.8KB，纯预留）。

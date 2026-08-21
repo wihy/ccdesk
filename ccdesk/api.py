@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
 
-from ccdesk import config, decisions, focus, judge, sources
+from ccdesk import config, decisions, focus, judge, pending, sources
 from ccdesk.collector import Collector
 from ccdesk.ledger import Ledger
 from ccdesk.recon_auth import reconcile
@@ -35,8 +35,10 @@ class AppState:
     ledger: Ledger
     collector: Collector
     health: CollectHealth = field(default_factory=CollectHealth)
-    # 判官结论缓存，键=tool_name+参数指纹。进程内即可，重启重建不影响正确性。
+    # 判官结论缓存，键=会话+参数指纹。进程内即可，重启重建不影响正确性。
     judge_cache: dict = field(default_factory=dict)
+    # 挂起中的人工决策。判官与人并行答，谁先给答案用谁。
+    board: pending.Board = field(default_factory=pending.Board)
 
 
 def _now_iso() -> str:
@@ -129,6 +131,9 @@ def make_server(host: str, port: int, state: AppState) -> ThreadingHTTPServer:
                 self._send({"anomalies": [asdict(a) for a in anomalies],
                             "checked": len(recent),
                             "bad_line_count": state.ledger.bad_line_count})
+            elif path == "/pending":
+                # 面板轮询这个拿待决项。空列表是常态，不是错误。
+                self._send({"items": state.board.list_open(), "ts": _now_iso()})
             elif path == "/replay":
                 query = parse_qs(self.path.split("?", 1)[1] if "?" in self.path else "")
                 try:
@@ -148,6 +153,9 @@ def make_server(host: str, port: int, state: AppState) -> ThreadingHTTPServer:
             if route == "/focus":
                 self._handle_focus(raw)
                 return
+            if route == "/resolve":
+                self._handle_resolve(raw)
+                return
             if route != "/decide":
                 self._send({"error": "not found"}, status=404)
                 return
@@ -161,7 +169,8 @@ def make_server(host: str, port: int, state: AppState) -> ThreadingHTTPServer:
                 payload = {}
 
             try:
-                verdict = judge.decide(payload, state.judge_cache)
+                verdict = judge.decide(payload, state.judge_cache,
+                                       board=state.board)
             except Exception:            # noqa: BLE001 — daemon 侧异常绝不能变成会话阻塞
                 logging.exception("judge 异常，降级 ask")
                 verdict = judge.Verdict("ask", "daemon_error")
@@ -193,6 +202,27 @@ def make_server(host: str, port: int, state: AppState) -> ThreadingHTTPServer:
             if verdict.updated_input is not None:
                 body["updatedInput"] = verdict.updated_input
             self._send(body)
+
+        def _handle_resolve(self, raw: bytes) -> None:
+            """人在面板上点了某个选项。
+
+            采纳与否由 Board 说了算：已被判官抢先定下的、或答案不在 options 里的，
+            一律 accepted=false —— 面板据此提示「已经由判官答过了」。
+            """
+            try:
+                payload = json.loads(raw.decode("utf-8") or "{}")
+            except (ValueError, UnicodeDecodeError):
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            req_id = payload.get("req_id")
+            answer = payload.get("answer")
+            if not isinstance(req_id, str) or not req_id:
+                self._send({"accepted": False, "reason": "bad_req_id"})
+                return
+            accepted = state.board.resolve(req_id, answer, by="human")
+            self._send({"accepted": accepted,
+                        "reason": None if accepted else "already_decided_or_illegal"})
 
         def _handle_focus(self, raw: bytes) -> None:
             """把 cmux 切到该会话所在的 workspace。
